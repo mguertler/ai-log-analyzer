@@ -1,4 +1,4 @@
-.PHONY: help install install-user install-pipx install-simple dev uninstall config print-config clean
+.PHONY: help install install-user install-pipx install-simple dev test uninstall config print-config clean
 
 DIST_NAME := ai-log-analyzer
 CONFIG_EXAMPLE := ai-log-analyzer.conf.example
@@ -6,6 +6,8 @@ PYTHON ?= python3
 PIPX ?= pipx
 VENV ?= .venv
 VENV_PYTHON := $(VENV)/bin/python
+# Tests run inside the local .venv when it exists, otherwise with the system interpreter.
+TEST_PYTHON := $(shell test -x $(VENV_PYTHON) && echo $(VENV_PYTHON) || echo $(PYTHON))
 
 help:
 	@echo "Targets:"
@@ -13,7 +15,8 @@ help:
 	@echo "  make install-simple Install standalone script/config interactively"
 	@echo "  make install-pipx   Install CLI tool as Python package with pipx and configure it"
 	@echo "  make install-user   Alias for make install-simple"
-	@echo "  make dev            Create/update local .venv and install editable"
+	@echo "  make dev            Create/update local .venv and install editable (with test dependencies)"
+	@echo "  make test           Run syntax checks and the pytest suite (uses .venv if present)"
 	@echo "  make config         Alias for make install-simple"
 	@echo "  make print-config   Print default user config path"
 	@echo "  make uninstall      Uninstall from pipx, then try pip as fallback"
@@ -46,10 +49,16 @@ install-pipx:
 dev:
 	$(PYTHON) -m venv $(VENV)
 	$(VENV_PYTHON) -m pip install --upgrade pip
-	$(VENV_PYTHON) -m pip install -e .
+	$(VENV_PYTHON) -m pip install -e ".[dev]"
 	@echo ""
 	@echo "Development environment ready."
 	@echo "Run: $(VENV)/bin/ai-log-analyzer --help"
+
+test:
+	$(TEST_PYTHON) -m py_compile src/ai_log_analyzer
+	$(TEST_PYTHON) src/ai_log_analyzer --version
+	bash -n scripts/install-simple.sh
+	$(TEST_PYTHON) -m pytest -q tests
 
 config: install-simple
 

@@ -4,13 +4,18 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ai-log-analyzer"
-version = "0.3.7"
+version = "0.3.8"
 description = "Lightweight AI-assisted analyzer for Linux logs from stdin or files"
 readme = "README.md"
 license = "GPL-2.0-only"
 requires-python = ">=3.10"
 dependencies = [
     "platformdirs>=4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
 ]
 
 [project.scripts]
@@ -30,4 +35,5 @@ include = [
     "ai-log-analyzer.conf.example",
     "src/ai_log_analyzer",
     "scripts/install-simple.sh",
+    "tests/",
 ]

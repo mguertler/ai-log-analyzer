@@ -223,6 +223,7 @@ if ask_yes_no "Edit configuration interactively?" "Y"; then
   echo "  800 lines  = for larger/stable context windows"
   echo "  1000+ lines = may fail or return empty results despite nominal 64k context"
   CHUNK_SIZE=$(ask "Chunk size in log lines" "500")
+  MAX_PARALLEL=$(ask "Maximum parallel chunk requests (1 = sequential)" "1")
   MAX_LINES=$(ask "Maximum filtered lines before abort" "15000")
   TAIL_LINES=$(ask "Default tail limit for input lines (0 = no limit)" "0")
 

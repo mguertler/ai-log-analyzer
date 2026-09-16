@@ -34,6 +34,12 @@ logs.max_parallel = 1
 # Syntax: positive integer. Use --max-lines NUMBER to override for one run.
 logs.max_lines = 15000
 
+# Function: Maximum size of the combined chunk findings sent to the final report request, in characters.
+# Syntax: positive integer, or 0 to disable. Aborts before the final API call instead of risking a silently truncated report.
+# Roughly 4 characters per token: 120000 characters fit comfortably into a 64k context together with an 8192 token answer.
+# CLI alternative: --max-final-input-chars N
+logs.max_final_input_chars = 120000
+
 # Function: For stdin/file input, analyze only the last N filtered lines.
 # Syntax: integer. 0 means no tail limit. CLI alternative: --tail-lines N
 logs.tail_lines = 0
@@ -120,11 +126,11 @@ openai.temperature = 0.1
 openai.timeout_seconds = 120
 
 # Function: Number of retries after the initial API attempt.
-# Syntax: integer. Default 1 means: one initial attempt plus one retry.
+# Syntax: integer. Default 1 means: one initial attempt plus one retry. Consider 3 when logs.max_parallel > 1 against rate-limited cloud APIs.
 openai.max_retries = 1
 
 # Function: Base delay between retries. Attempt number is multiplied by this value.
-# Syntax: seconds as integer or decimal, for example 2 or 5.0.
+# Syntax: seconds as integer or decimal, for example 2 or 5.0. A Retry-After header sent by the API takes precedence (capped at 60 seconds).
 openai.retry_backoff_seconds = 2
 
 # Function: Name of the max-token field for chat_completions payloads.
@@ -171,7 +177,7 @@ Analyze the provided log lines and identify only actionable operational problems
 The input may come from stdin, one or more log files, Docker logs, Kubernetes logs, syslog, application logs, or another user-provided command.
 Some lines may include severity labels such as [err], [warning], [notice], or [info]. Use those labels when available, but do not assume they are present.
 
-Return exactly "ok" if there are no events that require near-term action.
+Return exactly "ok" if there are no events that require near-term action, including when the chunk contains only harmless warnings.
 Otherwise quote only log entries that need attention, including:
 - configuration errors
 - failed services
@@ -191,12 +197,10 @@ Use exactly this format:
 * Explanation: <explain the error, likely impact, and what to check next>
 EOF
 
-# Function: Text prepended to every log chunk in the user message.
-# Syntax: plain or multi-line text.
-prompts.chunk_user_prefix <<EOF
-Analyze the following log output chunk. If the chunk contains only harmless warnings, output ok.
-
-EOF
+# Function: Optional operator text placed before the log data block in the user message.
+# Syntax: empty, plain, or multi-line text. Keep instructions in prompts.chunk_system; the log data itself is wrapped in
+# BEGIN/END LOG DATA markers and the model is told to treat everything inside as untrusted data.
+prompts.chunk_user_prefix = ""
 
 # Function: System prompt used for the final report.
 # Syntax: multi-line text.
