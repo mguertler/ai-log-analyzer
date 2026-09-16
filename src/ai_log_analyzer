@@ -40,7 +40,7 @@ except ImportError:  # Keep direct script usage working before package installat
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 
-__version__ = "0.4.2"
+__version__ = "0.4.3"
 
 APP_NAME = "ai-log-analyzer"
 CONFIG_BASENAME = "ai-log-analyzer.conf"
@@ -822,49 +822,61 @@ def build_parser(config: Dict[str, Any]) -> argparse.ArgumentParser:
   ai-log-analyzer /var/log/nginx/error.log
   ai-log-analyzer /var/log/syslog /var/log/auth.log --focus-on "security incidents"
   cat /var/log/syslog | ai-log-analyzer --focus-on "disk, filesystem, smart, mdadm"
+
+It's really simple ;-)
+
+Run:
+  journalctl --since "24 hours ago" -p "warning..alert" -o short-iso | ai-log-analyzer
 """
     parser = argparse.ArgumentParser(
         prog="ai-log-analyzer",
+        usage="ai-log-analyzer [options] [LOGFILE ...]",
         description="Turn noisy Linux logs from stdin or files into prioritized admin reports.",
         epilog=examples,
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False,
     )
-    parser.add_argument("--config", help="Path to key=value configuration file (.conf); legacy JSON is also accepted.")
-    parser.add_argument("--version", action="version", version=f"ai-log-analyzer {__version__}")
-    parser.add_argument("--print-config-path", action="store_true", help="Print the config file path that would be used (after --config, AI_LOG_ANALYZER_CONFIG and the system path) and exit.")
-    parser.add_argument("--init-config", action="store_true", help=argparse.SUPPRESS)
+    # Everyday flags first; everything that needs the README goes below.
+    basic = parser.add_argument_group("basic options")
+    advanced = parser.add_argument_group("advanced options")
+    basic.add_argument("-h", "--help", action="help", help="Show this help and exit.")
+    basic.add_argument("--no-warn", action="store_true", help="Suppress the data privacy and cost warning before the first API call.")
+    basic.add_argument("--focus-on", metavar="TOPIC", default=logs.get("focus_on", ""), help="Ask the AI to analyze only this topic, e.g. 'security incidents and network problems'.")
+    basic.add_argument("--ignore", metavar="TOPICS", default=logs.get("ignore", ""), help="Ask the AI to completely ignore these topics in the report, e.g. 'desktop notifications, printer warnings'.")
+    basic.add_argument("--gently-ignore", metavar="TOPICS", default=logs.get("gently_ignore", "") or logs.get("exclude_ai_patterns", ""), help="Ask the AI to deprioritize these topics unless they are severe, e.g. 'cosmetic UI warnings'.")
+    basic.add_argument("--mode", choices=["errors", "report", "all"], default=defaults.get("mode", "report"), help="report: print only the final report (default); errors: print chunk findings; all: print both.")
+    basic.add_argument("--mail", nargs="?", const="__CONFIG_DEFAULT__", default=None, metavar="ADDRESS", help="Optionally send the report to ADDRESS. Without ADDRESS, use mail.default_to from config.")
+    basic.add_argument("--think", dest="think", action="store_true", default=None, help="Use the model's thinking phase with --api ollama (default, better quality). Config: ollama.think.")
+    basic.add_argument("--no-think", dest="think", action="store_false", help="Skip the thinking phase with --api ollama: 3-5x faster and frees context/output budget.")
+    basic.add_argument("--dry-run", action="store_true", help="Collect/count log lines and exit without calling the API.")
+    advanced.add_argument("--config", metavar="FILE", help="Path to key=value configuration file (.conf); legacy JSON is also accepted.")
+    advanced.add_argument("--version", action="version", version=f"ai-log-analyzer {__version__}", help="Show version and exit.")
+    advanced.add_argument("--print-config-path", action="store_true", help="Print the config file path that would be used (after --config, AI_LOG_ANALYZER_CONFIG and the system path) and exit.")
+    advanced.add_argument("--init-config", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("paths", nargs="*", metavar="LOGFILE", help="Log file(s) to analyze. If omitted, ai-log-analyzer reads log lines from stdin.")
-    parser.add_argument("--tail-lines", type=int, default=int(logs.get("tail_lines", 0) or 0), metavar="N", help="Analyze only the last N filtered input lines. 0 means no tail limit.")
-    parser.add_argument("--chunk-size", dest="chunk_size", type=int, default=int(logs.get("chunk_size", 500)), help="Number of log lines per AI chunk. Default: 500. Lower for small/local models; higher only with large context windows.")
-    parser.add_argument("--max-parallel", dest="max_parallel", type=int, default=int(logs.get("max_parallel", 1)), metavar="N", help="Maximum number of AI chunks to analyze in parallel. Default: 1. Config: logs.max_parallel.")
-    parser.add_argument("--max-lines", type=int, default=int(logs.get("max_lines", 15000)), help="Abort if more than this number of filtered log lines would be analyzed. Default: 15000.")
-    parser.add_argument("--max-final-input-chars", dest="max_final_input_chars", type=int, default=int(logs.get("max_final_input_chars", 120000)), metavar="N", help="Abort before the final report if the combined chunk findings exceed N characters. 0 disables. Default: 120000. Config: logs.max_final_input_chars.")
-    parser.add_argument("--exclude-pattern", dest="exclude_patterns", action="append", default=None, metavar="KEYWORD", help="Exclude log lines containing KEYWORD before sending data to the AI. Can be used multiple times.")
-    parser.add_argument("--exclude-regex-pattern", dest="exclude_regex_patterns", action="append", default=None, metavar="REGEX", help="Exclude log lines matching REGEX before sending data to the AI. Can be used multiple times.")
-    parser.add_argument("--gently-ignore", default=logs.get("gently_ignore", "") or logs.get("exclude_ai_patterns", ""), help="Ask the AI to deprioritize these topics unless they are severe, e.g. 'cosmetic UI warnings'.")
-    parser.add_argument("--ignore", default=logs.get("ignore", ""), help="Ask the AI to completely ignore these topics in the report, e.g. 'desktop notifications, printer warnings'.")
-    parser.add_argument("--focus-on", default=logs.get("focus_on", ""), help="Ask the AI to analyze only this topic, e.g. 'security incidents and network problems'.")
-    parser.add_argument("--mode", choices=["errors", "report", "all"], default=defaults.get("mode", "report"), help="report: print only the final report (default); errors: print chunk findings; all: print both.")
-    parser.add_argument("--mail", nargs="?", const="__CONFIG_DEFAULT__", default=None, metavar="ADDRESS", help="Optionally send the report to ADDRESS. Without ADDRESS, use mail.default_to from config.")
-    parser.add_argument("--api", choices=["openai", "ollama"], default=ai.get("api", "openai"), help="AI backend: openai for OpenAI-compatible endpoints (uses openai.* settings), ollama for the native Ollama API (uses ollama.* settings). Config: ai.api.")
-    parser.add_argument("--model", default=None, help="Model name for chunk and final analysis. Default: model of the selected backend section.")
-    parser.add_argument("--max-output-tokens", type=int, default=int(ai.get("max_output_tokens", 8192)), metavar="N", help="Maximum output tokens for each AI response. Config: ai.max_output_tokens.")
-    parser.add_argument("--api-url", default=None, help="API base URL only, e.g. https://api.openai.com or http://127.0.0.1:11434. Default: api_url of the selected backend section.")
-    parser.add_argument("--api-path", default=None, help="API endpoint path. Default: api_path of the selected backend section (/v1/chat/completions or /api/chat).")
-    parser.add_argument("--api-style", choices=["chat_completions", "responses"], default=None, help="Payload style for --api openai. Default: chat_completions. Advanced users may use responses. Config: openai.api_style.")
-    parser.add_argument("--num-ctx", dest="num_ctx", type=int, default=None, metavar="N", help="Context window requested per call with --api ollama. 0 keeps the model default. Config: ollama.num_ctx.")
-    parser.add_argument("--think", dest="think", action="store_true", default=None, help="Use the model's thinking phase with --api ollama (default, better quality). Config: ollama.think.")
-    parser.add_argument("--no-think", dest="think", action="store_false", help="Skip the thinking phase with --api ollama: 3-5x faster and frees context/output budget.")
-    parser.add_argument("--no-progress", action="store_true", help="Disable progress output on stderr.")
-    parser.add_argument("--print-input", action="store_true", default=bool(defaults.get("print_input", False)), help="Print the filtered input lines before AI analysis.")
-    parser.add_argument("--save-dir", default=defaults.get("save_dir", ""), help="Optional directory to save chunk results and final report as text files.")
-    parser.add_argument("--include-timestamps", dest="include_timestamps", action="store_true", default=None, help="Ask the AI to include example timestamps for each actionable error and in the final report.")
-    parser.add_argument("--no-include-timestamps", dest="include_timestamps", action="store_false", help="Disable timestamp enrichment even if enabled in the config.")
-    parser.add_argument("--timestamp-samples", type=int, default=int(config.get("timestamps", {}).get("samples_per_error", 3)), help="Number of example timestamps to request per error when --include-timestamps is enabled.")
-    parser.add_argument("--debug-ai", action="store_true", help="Print sanitized per-chunk AI diagnostics to stderr. Does not print API keys.")
-    parser.add_argument("--dry-run", action="store_true", help="Collect/count log lines and exit without calling the API.")
-    parser.add_argument("--no-warn", action="store_true", help="Suppress the data privacy and cost warning before the first API call.")
-    parser.add_argument("--mock-ai", action="store_true", help=argparse.SUPPRESS)
+    advanced.add_argument("--tail-lines", type=int, default=int(logs.get("tail_lines", 0) or 0), metavar="N", help="Analyze only the last N filtered input lines. 0 means no tail limit.")
+    advanced.add_argument("--chunk-size", dest="chunk_size", type=int, default=int(logs.get("chunk_size", 500)), metavar="N", help="Number of log lines per AI chunk. Default: 500. Lower for small/local models; higher only with large context windows.")
+    advanced.add_argument("--max-parallel", dest="max_parallel", type=int, default=int(logs.get("max_parallel", 1)), metavar="N", help="Maximum number of AI chunks to analyze in parallel. Default: 1. Config: logs.max_parallel.")
+    advanced.add_argument("--max-lines", type=int, default=int(logs.get("max_lines", 15000)), metavar="N", help="Abort if more than this number of filtered log lines would be analyzed. Default: 15000.")
+    advanced.add_argument("--max-final-input-chars", dest="max_final_input_chars", type=int, default=int(logs.get("max_final_input_chars", 120000)), metavar="N", help="Abort before the final report if the combined chunk findings exceed N characters. 0 disables. Default: 120000. Config: logs.max_final_input_chars.")
+    advanced.add_argument("--exclude-pattern", dest="exclude_patterns", action="append", default=None, metavar="KEYWORD", help="Exclude log lines containing KEYWORD before sending data to the AI. Can be used multiple times.")
+    advanced.add_argument("--exclude-regex-pattern", dest="exclude_regex_patterns", action="append", default=None, metavar="REGEX", help="Exclude log lines matching REGEX before sending data to the AI. Can be used multiple times.")
+    advanced.add_argument("--api", choices=["openai", "ollama"], default=ai.get("api", "openai"), help="AI backend: openai for OpenAI-compatible endpoints (uses openai.* settings), ollama for the native Ollama API (uses ollama.* settings). Config: ai.api.")
+    advanced.add_argument("--model", default=None, help="Model name for chunk and final analysis. Default: model of the selected backend section.")
+    advanced.add_argument("--max-output-tokens", type=int, default=int(ai.get("max_output_tokens", 8192)), metavar="N", help="Maximum output tokens for each AI response. Config: ai.max_output_tokens.")
+    advanced.add_argument("--api-url", metavar="URL", default=None, help="API base URL only, e.g. https://api.openai.com or http://127.0.0.1:11434. Default: api_url of the selected backend section.")
+    advanced.add_argument("--api-path", metavar="PATH", default=None, help="API endpoint path. Default: api_path of the selected backend section (/v1/chat/completions or /api/chat).")
+    advanced.add_argument("--api-style", choices=["chat_completions", "responses"], default=None, help="Payload style for --api openai. Default: chat_completions. Advanced users may use responses. Config: openai.api_style.")
+    advanced.add_argument("--num-ctx", dest="num_ctx", type=int, default=None, metavar="N", help="Context window requested per call with --api ollama. 0 keeps the model default. Config: ollama.num_ctx.")
+    advanced.add_argument("--no-progress", action="store_true", help="Disable progress output on stderr.")
+    advanced.add_argument("--print-input", action="store_true", default=bool(defaults.get("print_input", False)), help="Print the filtered input lines before AI analysis.")
+    advanced.add_argument("--save-dir", metavar="DIR", default=defaults.get("save_dir", ""), help="Optional directory to save chunk results and final report as text files.")
+    advanced.add_argument("--include-timestamps", dest="include_timestamps", action="store_true", default=None, help="Ask the AI to include example timestamps for each actionable error and in the final report.")
+    advanced.add_argument("--no-include-timestamps", dest="include_timestamps", action="store_false", help="Disable timestamp enrichment even if enabled in the config.")
+    advanced.add_argument("--timestamp-samples", type=int, default=int(config.get("timestamps", {}).get("samples_per_error", 3)), metavar="N", help="Number of example timestamps to request per error when --include-timestamps is enabled.")
+    advanced.add_argument("--no-endpoint-check", dest="endpoint_check", action="store_false", default=True, help="Skip the reachability test of the AI endpoint that runs before any log data is read.")
+    advanced.add_argument("--debug-ai", action="store_true", help="Print sanitized per-chunk AI diagnostics to stderr. Does not print API keys.")
+    advanced.add_argument("--mock-ai", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
@@ -1461,18 +1473,97 @@ def truncated_response_message(config: Dict[str, Any], args: argparse.Namespace,
     )
 
 
-def call_ai(config: Dict[str, Any], args: argparse.Namespace, system_prompt: str, user_prompt: str, *, stage: str = "chunk") -> str:
-    if args.mock_ai:
-        return mock_ai_response(system_prompt, user_prompt)
-
-    api_style = args.api_style
-    api_url = resolve_endpoint(args)
+def build_request_headers(config: Dict[str, Any], api_style: str) -> Dict[str, str]:
     headers = {"Content-Type": "application/json"}
     if api_style != "ollama":
         api_key = os.environ.get("OPENAI_API_KEY") or str(config["openai"].get("api_key", ""))
         if api_key and api_key.strip() and api_key.strip() not in {"YOUR_KEY", "YOUR_OPENAI_API_KEY"}:
             headers["Authorization"] = f"Bearer {api_key.strip()}"
         headers.update({str(k): str(v) for k, v in (config["openai"].get("extra_headers") or {}).items()})
+    return headers
+
+
+ENDPOINT_CHECK_TIMEOUT_SECONDS = 10
+
+
+def http_json(url: str, headers: Dict[str, str], timeout: float, *, method: str = "GET", body: Optional[bytes] = None) -> Tuple[int, Any]:
+    """One HTTP round trip; HTTP error statuses are returned, connection problems raise URLError."""
+    request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status, raw = int(response.status), response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        status, raw = int(exc.code), exc.read().decode("utf-8", errors="replace")
+    try:
+        return status, json.loads(raw)
+    except json.JSONDecodeError:
+        return status, raw
+
+
+def check_endpoint(config: Dict[str, Any], args: argparse.Namespace) -> Tuple[str, List[str]]:
+    """Fail fast before any log line is read: is the endpoint reachable, and does it know the model?
+
+    Returns (status line, warnings). Raises AnalyzerError when the endpoint cannot be reached,
+    rejects the credentials, or (Ollama) does not have the model.
+    """
+    base = str(args.api_url or "").strip().rstrip("/")
+    endpoint = resolve_endpoint(args)
+    headers = build_request_headers(config, args.api_style)
+    timeout = ENDPOINT_CHECK_TIMEOUT_SECONDS
+    warnings: List[str] = []
+    try:
+        if args.api == "ollama":
+            status, data = http_json(base + "/api/version", headers, timeout)
+            if status >= 400:
+                raise AnalyzerError(f"The Ollama server at {base} answered HTTP {status} for /api/version; is ollama.api_url really an Ollama server?")
+            version = data.get("version", "") if isinstance(data, dict) else ""
+            status, data = http_json(base + "/api/show", headers, timeout, method="POST", body=json.dumps({"model": args.model}).encode("utf-8"))
+            if status == 404:
+                raise AnalyzerError(
+                    f"The Ollama server at {base} does not have the model {args.model!r}.\n\n"
+                    f"Pull it first:\n  ollama pull {args.model}\n\n"
+                    "or choose a model from 'ollama list' via ollama.model or --model."
+                )
+            if status >= 400:
+                detail = data.get("error", data) if isinstance(data, dict) else data
+                raise AnalyzerError(f"The Ollama server at {base} answered HTTP {status} for model {args.model!r}: {str(detail)[:500]}")
+            label = f"Ollama {version}" if version else "Ollama"
+            return f"Endpoint check: OK ({label} at {base}, model {args.model} available)", warnings
+
+        path = effective_api_path(args.api_style, args.api_path)
+        models_url = base + path[: path.index("/v1/")] + "/v1/models" if "/v1/" in path else base
+        status, data = http_json(models_url, headers, timeout)
+        if status in (401, 403):
+            raise AnalyzerError(
+                f"The endpoint {base} rejected the request (HTTP {status}).\n\n"
+                "Check the API key: OPENAI_API_KEY in the environment or openai.api_key in the config."
+            )
+        listed: List[str] = []
+        if isinstance(data, dict) and isinstance(data.get("data"), list):
+            listed = [str(item.get("id")) for item in data["data"] if isinstance(item, dict) and item.get("id")]
+        if listed and args.model not in listed:
+            warnings.append(
+                f"model {args.model!r} is not among the {len(listed)} models the endpoint lists; "
+                "the request may fail if the name is wrong."
+            )
+        detail = f"{len(listed)} models listed" if listed else f"HTTP {status}"
+        return f"Endpoint check: OK ({base} reachable, {detail})", warnings
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        reason = getattr(exc, "reason", None) or exc
+        raise AnalyzerError(
+            f"Cannot reach the AI endpoint {endpoint} (backend: {args.api}): {reason}\n\n"
+            "Check that the server is running and reachable from this host, and that ai.api and the api_url of the\n"
+            f"selected backend ({args.api}.api_url) are correct. Skip this test with --no-endpoint-check."
+        ) from exc
+
+
+def call_ai(config: Dict[str, Any], args: argparse.Namespace, system_prompt: str, user_prompt: str, *, stage: str = "chunk") -> str:
+    if args.mock_ai:
+        return mock_ai_response(system_prompt, user_prompt)
+
+    api_style = args.api_style
+    api_url = resolve_endpoint(args)
+    headers = build_request_headers(config, api_style)
 
     if api_style == "responses":
         payload = build_responses_payload(config, args.model, system_prompt, user_prompt)
@@ -2262,6 +2353,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     temp_path: Optional[Path] = None
     try:
+        if args.endpoint_check and not args.dry_run and not args.mock_ai:
+            status_line, check_warnings = check_endpoint(config, args)
+            print(status_line, file=sys.stderr)
+            for warning in check_warnings:
+                print(f"WARNING: {warning}", file=sys.stderr)
+
         input_files = resolve_input_files(args)
         if input_files:
             temp_path, line_count = collect_from_input_files(input_files, keyword_patterns, regex_patterns, args.tail_lines)

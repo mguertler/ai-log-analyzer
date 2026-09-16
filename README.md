@@ -215,12 +215,15 @@ Useful filtering options:
 - `--api openai|ollama` selects the backend for one run; `--no-think` skips the thinking phase of models such as Qwen3 with the native Ollama backend (faster, less context use), `--think` is the default
 - `--print-input` lets you inspect the filtered input first
 - `--dry-run` collects and counts lines without calling the AI endpoint
+- `--no-endpoint-check` skips the reachability test that otherwise runs before any log line is read
 
 ## Data handling and privacy
 
 Logs may contain hostnames, usernames, IP addresses, file paths, service names, email addresses and security-relevant events. The tool warns before sending filtered data to the configured AI endpoint unless you use `--no-warn` or set `safety.no_warn = true`.
 
 The endpoint can be local, self-hosted, or a third-party provider. For sensitive data, consider a local OpenAI-compatible endpoint such as LiteLLM or Ollama.
+
+Before any log line is read, the tool checks that the configured endpoint is reachable (and, with the Ollama backend, that the model exists). That request carries no log content; it only lists models or asks for the server version. Every run also prints which config file and which backend and model are in use.
 
 ### Untrusted input and prompt injection
 

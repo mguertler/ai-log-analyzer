@@ -14,28 +14,51 @@ class _Endpoint:
     """Serves scripted chat-completion responses and records what it received."""
 
     def __init__(self):
-        self.requests = []
+        self.requests = []  # chat requests only (/v1/chat/completions, /api/chat)
+        self.checks = []  # reachability requests (/v1/models, /api/version, /api/show)
         self.script = []  # list of callables(request_json) -> (status, headers, body_json)
         self.style = "chat"  # or "ollama": shapes the default responses
+        self.models = ["gpt-5-mini", "qwen3.8:27b", "gemma4:26b"]
+        self.auth_required = False
         self.lock = threading.Lock()
         endpoint = self
 
         class Handler(BaseHTTPRequestHandler):
-            def do_POST(self):
-                length = int(self.headers.get("Content-Length", "0"))
-                payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                with endpoint.lock:
-                    endpoint.requests.append({"path": self.path, "headers": dict(self.headers), "json": payload})
-                    step = endpoint.script.pop(0) if endpoint.script else endpoint.default
-                status, headers, body = step(payload)
+            def _send(self, status, body, headers=None):
                 data = json.dumps(body).encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
-                for key, value in headers.items():
+                for key, value in (headers or {}).items():
                     self.send_header(key, value)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
+
+            def do_GET(self):
+                with endpoint.lock:
+                    endpoint.checks.append({"method": "GET", "path": self.path, "headers": dict(self.headers)})
+                if self.path == "/api/version":
+                    return self._send(200, {"version": "0.34.0"})
+                if self.path == "/v1/models":
+                    if endpoint.auth_required and not self.headers.get("Authorization"):
+                        return self._send(401, {"error": {"message": "Incorrect API key provided"}})
+                    return self._send(200, {"object": "list", "data": [{"id": m, "object": "model"} for m in endpoint.models]})
+                return self._send(404, {"error": "not found"})
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                if self.path == "/api/show":
+                    with endpoint.lock:
+                        endpoint.checks.append({"method": "POST", "path": self.path, "json": payload})
+                    if payload.get("model") in endpoint.models:
+                        return self._send(200, {"modelfile": "FROM x", "capabilities": ["completion", "thinking"]})
+                    return self._send(404, {"error": f"model '{payload.get('model')}' not found"})
+                with endpoint.lock:
+                    endpoint.requests.append({"path": self.path, "headers": dict(self.headers), "json": payload})
+                    step = endpoint.script.pop(0) if endpoint.script else endpoint.default
+                status, headers, body = step(payload)
+                self._send(status, body, headers)
 
             def log_message(self, *args):  # keep pytest output clean
                 pass
@@ -167,3 +190,63 @@ def test_real_http_ollama_no_think_flag(config_path, endpoint, log_file, capsys)
     code, _, err = _run(config_path, endpoint, str(log_file(["quiet line"])), "--api", "ollama", "--no-think", capsys=capsys)
     assert code == 0, err
     assert endpoint.requests[0]["json"]["think"] is False
+
+
+def test_check_openai_backend_lists_models_before_any_log_is_read(config_path, endpoint, log_file, capsys):
+    code, out, err = _run(config_path, endpoint, str(log_file(["quiet line"])), capsys=capsys)
+    assert code == 0, err
+    assert [c["path"] for c in endpoint.checks] == ["/v1/models"]
+    assert f"Endpoint check: OK ({endpoint.url} reachable, 3 models listed)" in err
+    assert err.index("Endpoint check") < err.index("Collected 1 filtered")
+    assert "WARNING" not in err
+
+
+def test_check_warns_when_model_is_not_listed(config_path, endpoint, log_file, capsys):
+    code, _, err = _run(config_path, endpoint, str(log_file(["quiet line"])), "--model", "typo-model", capsys=capsys)
+    assert code == 0, err
+    assert "WARNING: model 'typo-model' is not among the 3 models the endpoint lists" in err
+
+
+def test_check_reports_rejected_credentials(config_path, endpoint, log_file, capsys, monkeypatch):
+    endpoint.auth_required = True
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    code, _, err = _run(config_path, endpoint, str(log_file(["quiet line"])), capsys=capsys)
+    assert code == 1
+    assert "rejected the request (HTTP 401)" in err and "OPENAI_API_KEY" in err
+    assert endpoint.requests == [], "no chat request after a failed check"
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-ok")
+    code, _, err = _run(config_path, endpoint, str(log_file(["quiet line"])), capsys=capsys)
+    assert code == 0, err
+
+
+def test_check_ollama_backend_confirms_version_and_model(config_path, endpoint, log_file, capsys):
+    endpoint.style = "ollama"
+    code, _, err = _run(config_path, endpoint, str(log_file(["quiet line"])), "--api", "ollama", "--model", "qwen3.8:27b", capsys=capsys)
+    assert code == 0, err
+    assert [c["path"] for c in endpoint.checks] == ["/api/version", "/api/show"]
+    assert endpoint.checks[1]["json"] == {"model": "qwen3.8:27b"}
+    assert f"Endpoint check: OK (Ollama 0.34.0 at {endpoint.url}, model qwen3.8:27b available)" in err
+
+
+def test_check_ollama_missing_model_stops_before_reading_logs(config_path, endpoint, log_file, capsys):
+    endpoint.style = "ollama"
+    code, _, err = _run(config_path, endpoint, str(log_file(["quiet line"])), "--api", "ollama", "--model", "nope:latest", capsys=capsys)
+    assert code == 1
+    assert "does not have the model 'nope:latest'" in err and "ollama pull nope:latest" in err
+    assert "Collected" not in err and endpoint.requests == []
+
+
+def test_check_unreachable_endpoint_fails_fast(config_path, log_file, capsys):
+    code = ala.main(["--config", str(config_path), "--no-progress", "--no-warn", "--api-url", "http://127.0.0.1:9", str(log_file(["quiet line"]))])
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "Cannot reach the AI endpoint http://127.0.0.1:9/v1/chat/completions (backend: openai)" in err
+    assert "--no-endpoint-check" in err and "Collected" not in err
+
+
+def test_check_is_skipped_for_dry_run_and_opt_out(config_path, endpoint, log_file, capsys):
+    code, _, err = _run(config_path, endpoint, str(log_file(["quiet line"])), "--dry-run", capsys=capsys)
+    assert code == 0 and endpoint.checks == [] and "Endpoint check" not in err
+    code, _, err = _run(config_path, endpoint, str(log_file(["quiet line"])), "--no-endpoint-check", capsys=capsys)
+    assert code == 0, err
+    assert endpoint.checks == [] and "Endpoint check" not in err and len(endpoint.requests) == 1

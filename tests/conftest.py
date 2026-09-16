@@ -62,8 +62,10 @@ def run_cli(capsys, monkeypatch, config_path: Path):
         args = ["--config", str(config_path), "--no-progress", *argv]
         if mock:
             args.append("--mock-ai")
-        elif not warn:
-            args.append("--no-warn")
+        else:
+            args.append("--no-endpoint-check")
+            if not warn:
+                args.append("--no-warn")
         code = ala.main(args)
         captured = capsys.readouterr()
         return code, captured.out, captured.err

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ai-log-analyzer"
-version = "0.4.2"
+version = "0.4.3"
 description = "Lightweight AI-assisted analyzer for Linux logs from stdin or files"
 readme = "README.md"
 license = "GPL-2.0-only"
