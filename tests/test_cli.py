@@ -273,3 +273,32 @@ def test_mock_final_stage_detection_is_not_fooled_by_log_words(run_cli, log_file
     code, out, _ = run_cli(str(log_file(lines)), "--mode", "errors")
     assert code == 0
     assert "* Error: app: prioritized chunk analyses failed to load" in out
+
+
+def test_startup_shows_config_path_backend_and_model(run_cli, log_file, config_path):
+    code, _, err = run_cli(str(log_file(["quiet"])))
+    assert code == 0
+    assert f"Config: {config_path}" in err
+    assert "Analyzing with endpoint: https://api.openai.com/v1/chat/completions (backend: openai, model: gpt-5-mini)" in err
+    code, _, err = run_cli(str(log_file(["quiet"])), "--api", "ollama", "--model", "qwen3.8:27b")
+    assert code == 0
+    assert "Endpoint appears to be local: http://127.0.0.1:11434/api/chat (backend: ollama, model: qwen3.8:27b)" in err
+
+
+def test_privacy_warning_names_backend_and_model(run_cli, log_file, monkeypatch):
+    monkeypatch.setattr(ala, "call_ai", lambda *a, **k: "ok")
+    monkeypatch.setattr(ala, "read_confirmation_from_user", lambda: "no")
+    _, _, err = run_cli(str(log_file(["quiet"])), "--api", "ollama", mock=False, warn=True)
+    assert "(backend: ollama, model: gemma4:26b)" in err
+
+
+def test_print_config_path_reports_the_resolved_path(capsys, config_path, monkeypatch, tmp_path):
+    assert ala.main(["--config", str(config_path), "--print-config-path"]) == 0
+    assert capsys.readouterr().out.strip() == str(config_path)
+    env_conf = tmp_path / "env.conf"
+    monkeypatch.setenv("AI_LOG_ANALYZER_CONFIG", str(env_conf))
+    assert ala.main(["--print-config-path"]) == 0
+    assert capsys.readouterr().out.strip() == str(env_conf)
+    # no "Config:" chatter on stderr for this query
+    ala.main(["--config", str(config_path), "--print-config-path"])
+    assert "Config:" not in capsys.readouterr().err

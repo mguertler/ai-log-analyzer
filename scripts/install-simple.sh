@@ -41,10 +41,6 @@ ask() {
   fi
 }
 
-ask_secret() {
-  ask "$1" "$2"
-}
-
 ask_yes_no() {
   prompt="$1"
   default="$2"
@@ -57,6 +53,58 @@ ask_yes_no() {
     y|Y|yes|YES|Yes) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# config_get KEY DEFAULT: current value of KEY in the installed config, so the dialog proposes
+# what is configured now and pressing Enter everywhere changes nothing.
+config_get() {
+  CONFIG_GET_KEY="$1" CONFIG_GET_DEFAULT="$2" CONFIG_GET_PATH="$CONFIG_PATH" python3 - <<'PY'
+import os
+import re
+from pathlib import Path
+
+key = os.environ["CONFIG_GET_KEY"]
+value = os.environ["CONFIG_GET_DEFAULT"]
+path = Path(os.environ["CONFIG_GET_PATH"])
+pattern = re.compile(r"^\s*" + re.escape(key) + r"\s*=(.*)$")
+in_heredoc = None
+if path.exists():
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if in_heredoc:
+            if stripped == in_heredoc:
+                in_heredoc = None
+            continue
+        if not stripped or stripped.startswith(("#", ";")):
+            continue
+        if "<<" in line and "=" not in line:
+            in_heredoc = line.split("<<", 1)[1].strip().strip("'\"")
+            continue
+        m = pattern.match(line)
+        if not m:
+            continue
+        raw = m.group(1).strip()
+        if raw[:1] in ("'", '"') and raw.count(raw[0]) >= 2:
+            value = raw[1:raw.index(raw[0], 1)]
+        else:
+            value = re.split(r"\s[#;]", raw, maxsplit=1)[0].strip()
+print(value)
+PY
+}
+
+ask_key() {
+  current="$1"
+  if [ -n "$current" ]; then
+    printf "API key [keep existing key]: " >&2
+  else
+    printf "API key (empty = use OPENAI_API_KEY environment variable) []: " >&2
+  fi
+  IFS= read -r answer || answer=""
+  if [ -z "$answer" ]; then
+    printf '%s\n' "$current"
+  else
+    printf '%s\n' "$answer"
+  fi
 }
 
 if [ "$CONFIG_ONLY" -eq 0 ]; then
@@ -223,18 +271,22 @@ if ask_yes_no "Edit configuration interactively?" "Y"; then
   echo "Only the settings of the selected backend are used; the other section in the config is ignored."
   BACKEND=""
   while [ "$BACKEND" != "openai" ] && [ "$BACKEND" != "ollama" ]; do
-    BACKEND=$(ask "Backend (openai/ollama)" "openai")
+    BACKEND=$(ask "Backend (openai/ollama)" "$(config_get ai.api openai)")
   done
 
   API_URL=""; API_KEY=""; MODEL=""; OLLAMA_URL=""; OLLAMA_MODEL=""; NUM_CTX=""; THINK=""
   if [ "$BACKEND" = "ollama" ]; then
     echo ""
-    OLLAMA_URL=$(ask "Ollama server URL" "http://127.0.0.1:11434")
-    OLLAMA_MODEL=$(ask "Ollama model tag (see: ollama list)" "gemma4:26b")
+    OLLAMA_URL=$(ask "Ollama server URL" "$(config_get ollama.api_url http://127.0.0.1:11434)")
+    OLLAMA_MODEL=$(ask "Ollama model tag (see: ollama list)" "$(config_get ollama.model gemma4:26b)")
     echo "Context window: 0 keeps the model default. 32768 or 65536 are typical for log analysis; Ollama reloads the model when it changes."
-    NUM_CTX=$(ask "Context window in tokens (num_ctx)" "0")
+    NUM_CTX=$(ask "Context window in tokens (num_ctx)" "$(config_get ollama.num_ctx 0)")
     echo "Thinking: better prioritization and format adherence, but 3-5x slower. Models without thinking support run without it automatically."
-    if ask_yes_no "Use the thinking phase of the model?" "Y"; then
+    case "$(config_get ollama.think true)" in
+      false|no|off|0) THINK_DEFAULT="n" ;;
+      *) THINK_DEFAULT="Y" ;;
+    esac
+    if ask_yes_no "Use the thinking phase of the model?" "$THINK_DEFAULT"; then
       THINK="true"
     else
       THINK="false"
@@ -245,12 +297,12 @@ if ask_yes_no "Edit configuration interactively?" "Y"; then
     echo "  OpenAI:  https://api.openai.com"
     echo "  LiteLLM: http://127.0.0.1:4000"
     echo "  Ollama:  http://127.0.0.1:11434"
-    API_URL=$(ask "API base URL" "https://api.openai.com")
-    API_KEY=$(ask_secret "API key (empty = use OPENAI_API_KEY environment variable)" "")
-    MODEL=$(ask "Model" "gpt-5-mini")
+    API_URL=$(ask "API base URL" "$(config_get openai.api_url https://api.openai.com)")
+    API_KEY=$(ask_key "$(config_get openai.api_key "")")
+    MODEL=$(ask "Model" "$(config_get openai.model gpt-5-mini)")
   fi
   echo ""
-  MAX_OUTPUT_TOKENS=$(ask "Maximum output tokens" "8192")
+  MAX_OUTPUT_TOKENS=$(ask "Maximum output tokens" "$(config_get ai.max_output_tokens 8192)")
   echo ""
   echo "Chunk size tips:"
   echo "  200 lines  = safer for smaller/local models or very noisy logs"
@@ -258,10 +310,10 @@ if ask_yes_no "Edit configuration interactively?" "Y"; then
   echo "  500 lines  = recommended default; best for 64k context-size with thinking model"
   echo "  800 lines  = for larger/stable context windows"
   echo "  1000+ lines = may fail or return empty results despite nominal 64k context"
-  CHUNK_SIZE=$(ask "Chunk size in log lines" "500")
-  MAX_PARALLEL=$(ask "Maximum parallel chunk requests (1 = sequential)" "1")
-  MAX_LINES=$(ask "Maximum filtered lines before abort" "15000")
-  TAIL_LINES=$(ask "Default tail limit for input lines (0 = no limit)" "0")
+  CHUNK_SIZE=$(ask "Chunk size in log lines" "$(config_get logs.chunk_size 500)")
+  MAX_PARALLEL=$(ask "Maximum parallel chunk requests (1 = sequential)" "$(config_get logs.max_parallel 1)")
+  MAX_LINES=$(ask "Maximum filtered lines before abort" "$(config_get logs.max_lines 15000)")
+  TAIL_LINES=$(ask "Default tail limit for input lines (0 = no limit)" "$(config_get logs.tail_lines 0)")
 
   export BACKEND API_KEY API_URL MODEL OLLAMA_URL OLLAMA_MODEL NUM_CTX THINK MAX_OUTPUT_TOKENS CHUNK_SIZE MAX_PARALLEL MAX_LINES TAIL_LINES CONFIG_PATH
   python3 - <<'PY'
@@ -277,7 +329,6 @@ updates = {
     "logs.max_parallel": os.environ.get("MAX_PARALLEL", "1"),
     "logs.max_lines": os.environ.get("MAX_LINES", "15000"),
     "logs.tail_lines": os.environ.get("TAIL_LINES", "0"),
-    "timestamps.enabled": "true",
 }
 if backend == "ollama":
     updates.update({
@@ -290,7 +341,6 @@ else:
     updates.update({
         "openai.api_url": os.environ.get("API_URL", "https://api.openai.com"),
         "openai.api_key": os.environ.get("API_KEY", ""),
-        "openai.api_style": "chat_completions",
         "openai.model": os.environ.get("MODEL", "gpt-5-mini"),
     })
 

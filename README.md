@@ -253,7 +253,7 @@ Recommended for most users:
 sudo make install
 ```
 
-This installs the standalone script and config file interactively. It does not require `pipx`.
+This installs the standalone script and config file interactively. It does not require `pipx`. The dialog proposes the values from an existing config, so on an upgrade you can press Enter through it without changing anything; an existing API key is never shown and is kept unless you type a new one.
 
 If an existing config file is found, the installer can merge it with the new example config:
 

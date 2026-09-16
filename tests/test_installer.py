@@ -124,3 +124,69 @@ def test_existing_config_can_be_kept_unchanged(tmp_path):
     proc = run_installer([str(conf), "n", "n", "n"])  # no merge, no overwrite, no edit
     assert proc.returncode == 0, proc.stderr
     assert conf.read_text(encoding="utf-8") == "logs.chunk_size = 123\n"
+
+
+def test_dialog_proposes_current_values_and_enter_keeps_them(tmp_path):
+    conf = tmp_path / "ai-log-analyzer.conf"
+    first = run_installer([str(conf), "y", "openai", "http://127.0.0.1:4000", "sk-secret-123", "Gemma4-26b", "12000", "300", "2", "9000", "50"])
+    assert first.returncode == 0, first.stderr
+    before = values(conf)
+    # Upgrade run: merge, then Enter through every question.
+    second = run_installer([str(conf), "y", "y"] + [""] * 9)
+    assert second.returncode == 0, second.stderr
+    assert "Backend (openai/ollama) [openai]" in second.stderr
+    assert "API base URL [http://127.0.0.1:4000]" in second.stderr
+    assert "API key [keep existing key]" in second.stderr
+    assert "sk-secret-123" not in second.stderr, "the key must never be echoed as a default"
+    assert "Model [Gemma4-26b]" in second.stderr
+    assert "Maximum output tokens [12000]" in second.stderr
+    assert "Chunk size in log lines [300]" in second.stderr
+    assert "Maximum parallel chunk requests (1 = sequential) [2]" in second.stderr
+    assert "Maximum filtered lines before abort [9000]" in second.stderr
+    assert "Default tail limit for input lines (0 = no limit) [50]" in second.stderr
+    assert values(conf) == before, "Enter through the dialog must not change anything"
+
+
+def test_dialog_new_key_replaces_old_and_empty_prompt_without_key(tmp_path):
+    conf = tmp_path / "ai-log-analyzer.conf"
+    fresh = run_installer([str(conf), "y", "openai", "", "", "", "", "", "", "", ""])
+    assert fresh.returncode == 0, fresh.stderr
+    assert "API key (empty = use OPENAI_API_KEY environment variable) []" in fresh.stderr
+    assert values(conf)["openai.api_key"] == '""'
+    replaced = run_installer([str(conf), "y", "y", "", "", "sk-new", "", "", "", "", "", ""])
+    assert replaced.returncode == 0, replaced.stderr
+    assert values(conf)["openai.api_key"] == "sk-new"
+
+
+def test_dialog_ollama_defaults_follow_config_including_think(tmp_path):
+    conf = tmp_path / "ai-log-analyzer.conf"
+    text = ala.render_default_config()
+    for old, new in (
+        ("\nai.api = openai\n", "\nai.api = ollama\n"),
+        ("\nollama.api_url = http://127.0.0.1:11434\n", "\nollama.api_url = http://shark:11434\n"),
+        ("\nollama.model = gemma4:26b\n", "\nollama.model = qwen3.8:27b\n"),
+        ("\nollama.num_ctx = 0\n", "\nollama.num_ctx = 32768\n"),
+        ("\nollama.think = true\n", "\nollama.think = false\n"),
+    ):
+        assert text.count(old) == 1, old
+        text = text.replace(old, new)
+    conf.write_text(text, encoding="utf-8")
+    before = values(conf)
+    proc = run_installer([str(conf), "y", "y"] + [""] * 10)
+    assert proc.returncode == 0, proc.stderr
+    assert "Backend (openai/ollama) [ollama]" in proc.stderr
+    assert "Ollama server URL [http://shark:11434]" in proc.stderr
+    assert "Ollama model tag (see: ollama list) [qwen3.8:27b]" in proc.stderr
+    assert "Context window in tokens (num_ctx) [32768]" in proc.stderr
+    assert "Use the thinking phase of the model? [n]" in proc.stderr
+    assert values(conf) == before
+
+
+def test_dialog_does_not_touch_settings_it_does_not_ask_about(tmp_path):
+    conf = tmp_path / "ai-log-analyzer.conf"
+    text = ala.render_default_config().replace("openai.api_style = chat_completions", "openai.api_style = responses").replace("timestamps.enabled = true", "timestamps.enabled = false")
+    conf.write_text(text, encoding="utf-8")
+    proc = run_installer([str(conf), "y", "y"] + [""] * 9)
+    assert proc.returncode == 0, proc.stderr
+    got = values(conf)
+    assert got["openai.api_style"] == "responses" and got["timestamps.enabled"] == "false"

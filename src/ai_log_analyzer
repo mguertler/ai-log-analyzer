@@ -40,7 +40,7 @@ except ImportError:  # Keep direct script usage working before package installat
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 APP_NAME = "ai-log-analyzer"
 CONFIG_BASENAME = "ai-log-analyzer.conf"
@@ -799,7 +799,7 @@ EOF
 def build_pre_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--config", help="Path to key=value configuration file (.conf); legacy JSON is also accepted.")
-    parser.add_argument("--print-config-path", action="store_true", help="Print the default user config path and exit.")
+    parser.add_argument("--print-config-path", action="store_true", help="Print the config file path that would be used (after --config, AI_LOG_ANALYZER_CONFIG and the system path) and exit.")
     parser.add_argument("--version", action="store_true", help="Print version and exit.")
     # Compatibility with the earlier standalone script. Hidden from --help.
     parser.add_argument("--init-config", action="store_true", help=argparse.SUPPRESS)
@@ -831,7 +831,7 @@ def build_parser(config: Dict[str, Any]) -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", help="Path to key=value configuration file (.conf); legacy JSON is also accepted.")
     parser.add_argument("--version", action="version", version=f"ai-log-analyzer {__version__}")
-    parser.add_argument("--print-config-path", action="store_true", help="Print the default user config path and exit.")
+    parser.add_argument("--print-config-path", action="store_true", help="Print the config file path that would be used (after --config, AI_LOG_ANALYZER_CONFIG and the system path) and exit.")
     parser.add_argument("--init-config", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("paths", nargs="*", metavar="LOGFILE", help="Log file(s) to analyze. If omitted, ai-log-analyzer reads log lines from stdin.")
     parser.add_argument("--tail-lines", type=int, default=int(logs.get("tail_lines", 0) or 0), metavar="N", help="Analyze only the last N filtered input lines. 0 means no tail limit.")
@@ -964,10 +964,16 @@ def endpoint_is_local(endpoint_url: str) -> bool:
         return False
 
 
-def format_endpoint_status(endpoint_url: str) -> str:
+def format_endpoint_status(endpoint_url: str, api: str = "", model: str = "") -> str:
+    detail = f" (backend: {api}, model: {model})" if api else ""
     if endpoint_is_local(endpoint_url):
-        return f"Endpoint appears to be local: {endpoint_url}"
-    return f"Analyzing with endpoint: {endpoint_url}"
+        return f"Endpoint appears to be local: {endpoint_url}{detail}"
+    return f"Analyzing with endpoint: {endpoint_url}{detail}"
+
+
+def describe_endpoint(args: argparse.Namespace) -> str:
+    """One line that answers "where is this going": endpoint, backend (ai.api) and model."""
+    return format_endpoint_status(resolve_endpoint(args), str(getattr(args, "api", "")), str(getattr(args, "model", "")))
 
 def getenv_or_config(config: Dict[str, Any], section: str, key: str, env_name: str = "") -> str:
     if env_name:
@@ -2083,8 +2089,7 @@ def read_confirmation_from_user() -> str:
 def confirm_before_api(config: Dict[str, Any], args: argparse.Namespace, line_count: int) -> None:
     if warning_suppressed(config, args):
         return
-    api_url = resolve_endpoint(args)
-    endpoint_line = format_endpoint_status(api_url) if endpoint_is_local(api_url) else f"Endpoint: {api_url}"
+    endpoint_line = describe_endpoint(args)
     message = f"""
 WARNING: {line_count} log lines will be sent to the configured AI endpoint.
 
@@ -2143,7 +2148,7 @@ def handle_special_options(argv: Sequence[str]) -> Optional[int]:
         return 0
 
     if pre_args.print_config_path:
-        print(default_config_path())
+        print(resolve_config_path(pre_args.config))
         return 0
 
     # Hidden compatibility helper for older standalone workflows. It writes the default config
@@ -2203,9 +2208,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     parser = build_parser(config)
     args = parser.parse_args(argv)
+    if not args.print_config_path and not args.init_config:
+        print(f"Config: {config_path}", file=sys.stderr)
 
     if args.print_config_path:
-        print(default_config_path())
+        print(config_path)
         return 0
     if args.init_config:
         target = resolve_config_path(args.config) if args.config else default_config_path()
@@ -2296,7 +2303,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 0
 
         confirm_before_api(config, args, line_count)
-        print("\n" + format_endpoint_status(resolve_endpoint(args)), file=sys.stderr)
+        print("\n" + describe_endpoint(args), file=sys.stderr)
 
         chunk_results = analyze_chunks(config, args, temp_path, line_count)
         final_report: Optional[str] = None
