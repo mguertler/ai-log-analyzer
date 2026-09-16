@@ -94,3 +94,32 @@ def test_targets_with_spaces_are_shell_quoted_upstream():
     targets = build_search_targets(["/var/log/my app.log", "/var/log/syslog"])
     assert targets == "'/var/log/my app.log' /var/log/syslog"
     assert build_search_targets([]) == "<input>"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "   - **Search:** `grep -E 'I/O error' <file>; rm -rf /`",
+        "- **Search**: `grep -E 'I/O error' /old`",
+        "* __Search:__ grep -E \"I/O error\" /old | sh",
+        "Search: `grep -E 'I/O error' /old`",
+    ],
+)
+def test_markdown_decorated_search_lines_are_sanitized(line):
+    result = sanitize_search_lines(line, TARGETS)
+    assert result.endswith(f"grep -E 'I/O error' {TARGETS}"), result
+    assert "rm -rf" not in result and "| sh" not in result and "`" not in result
+
+
+def test_regex_with_embedded_single_quotes_round_trips_through_shell():
+    import subprocess
+
+    line = "* Search: grep -E 'Invalid user '\"'\"'ignore previous'\"'\"'' /x"
+    # The model already used shell escaping; we only take the first single-quoted group, which is safe.
+    rendered = sanitize_search_lines(line, TARGETS)
+    assert rendered == f"* Search: grep -E 'Invalid user ' {TARGETS}"
+    # And a regex containing a quote is escaped so the shell reproduces it exactly.
+    rendered = sanitize_search_lines("* Search: grep -E \"user 'bob'\" /x", "/dev/null")
+    command = rendered.split("Search: ", 1)[1]
+    printed = subprocess.run(["bash", "-c", command.replace("grep -E", "printf '%s\\n'", 1).replace(" /dev/null", "")], capture_output=True, text=True)
+    assert printed.stdout.strip() == "user 'bob'"

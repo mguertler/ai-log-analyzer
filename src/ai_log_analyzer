@@ -40,7 +40,7 @@ except ImportError:  # Keep direct script usage working before package installat
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 
-__version__ = "0.3.8"
+__version__ = "0.3.9"
 
 APP_NAME = "ai-log-analyzer"
 CONFIG_BASENAME = "ai-log-analyzer.conf"
@@ -147,7 +147,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "api_key": "",  # Prefer OPENAI_API_KEY in the environment or put the key here.
         "api_url": "https://api.openai.com",  # Base URL only, without /v1/... endpoint path.
         "api_path": "/v1/chat/completions",
-        "api_style": "chat_completions",  # chat_completions or responses
+        "api_style": "chat_completions",  # chat_completions, responses, or ollama (native /api/chat)
         "model": "gpt-5-mini",
         "temperature": 0.1,
         "max_output_tokens": 8192,
@@ -188,6 +188,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "safety": {
         "no_warn": False,
     },
+    "ollama": {  # Only used with openai.api_style = ollama.
+        "num_ctx": 0,  # Context window requested per call; 0 keeps the model default.
+        "think": "",  # "" = model default; true/false to force thinking on or off.
+        "keep_alive": "",  # "" = server default; e.g. 5m, 0 (unload after the run), -1 (keep loaded).
+    },
     "mail": {
         "default_to": "",
         "from": "ai-log-analyzer@localhost",
@@ -208,6 +213,10 @@ class AnalyzerError(Exception):
 
 class EmptyAIResponseError(AnalyzerError):
     """Raised when the API returned JSON but no usable text content."""
+
+
+class TruncatedAIResponseError(AnalyzerError):
+    """Raised when the model stopped because the output token limit was reached."""
 
 
 def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -596,11 +605,13 @@ mail.use_starttls = false
 # Advanced Parameters
 
 # Function: API endpoint path appended to openai.api_url.
-# Syntax: /v1/chat/completions recommended. /v1/responses is available for advanced use.
+# Syntax: /v1/chat/completions recommended. Leave it at this default and the path follows openai.api_style
+# automatically (/v1/responses for responses, /api/chat for ollama). Set it explicitly only for unusual proxies.
 openai.api_path = /v1/chat/completions
 
 # Function: Request payload style.
-# Syntax: chat_completions recommended. responses is available for advanced use.
+# Syntax: chat_completions recommended for OpenAI, LiteLLM and Ollama's OpenAI-compatible endpoint.
+# ollama uses Ollama's native /api/chat API and enables the ollama.* settings below. responses is available for advanced use.
 openai.api_style = chat_completions
 
 # Function: Sampling temperature. Lower values usually improve deterministic formatting.
@@ -626,6 +637,21 @@ openai.max_tokens_field = max_tokens
 # Function: Extra HTTP headers sent to the API.
 # Syntax: JSON object, for example {"X-Header":"value"}. Use {} for none.
 openai.extra_headers = {}
+
+# Native Ollama API (only used with openai.api_style = ollama)
+
+# Function: Context window (num_ctx) requested for every call, so no custom Modelfile is needed for large contexts.
+# Syntax: integer tokens, for example 32768 or 65536. 0 keeps the model default. CLI alternative: --num-ctx N
+# Ollama reloads the model when this changes. Keep chunk size and this value consistent: a 500 line chunk needs roughly 16k-24k tokens.
+ollama.num_ctx = 0
+
+# Function: Thinking mode for models that support it, for example Qwen3.
+# Syntax: empty keeps the model default; false skips the thinking phase (faster, uses less of the output budget); true forces it.
+ollama.think = ""
+
+# Function: How long Ollama keeps the model loaded after the last call.
+# Syntax: empty keeps the server default; duration such as 5m or 1h; 0 unloads right after the run (useful for cron); -1 keeps it loaded.
+ollama.keep_alive = ""
 
 # Function: Default output mode.
 # Syntax: report, errors, or all. report prints only the final report and is best for normal use.
@@ -796,7 +822,8 @@ def build_parser(config: Dict[str, Any]) -> argparse.ArgumentParser:
     parser.add_argument("--max-output-tokens", type=int, default=int(openai.get("max_output_tokens", 8192)), metavar="N", help="Maximum output tokens for each AI response. Config: openai.max_output_tokens.")
     parser.add_argument("--api-url", default=openai.get("api_url", "https://api.openai.com"), help="API base URL only, e.g. https://api.openai.com or http://127.0.0.1:4000.")
     parser.add_argument("--api-path", default=openai.get("api_path", "/v1/chat/completions"), help="API endpoint path. Default: /v1/chat/completions. Advanced users may use /v1/responses.")
-    parser.add_argument("--api-style", choices=["chat_completions", "responses"], default=openai.get("api_style", "chat_completions"), help="API payload style. Default: chat_completions. Advanced users may use responses.")
+    parser.add_argument("--api-style", choices=["chat_completions", "responses", "ollama"], default=openai.get("api_style", "chat_completions"), help="API payload style. Default: chat_completions. ollama uses the native Ollama /api/chat API. Advanced users may use responses.")
+    parser.add_argument("--num-ctx", dest="num_ctx", type=int, default=int(config.get("ollama", {}).get("num_ctx", 0) or 0), metavar="N", help="Context window requested per call with --api-style ollama. 0 keeps the model default. Config: ollama.num_ctx.")
     parser.add_argument("--no-progress", action="store_true", help="Disable progress output on stderr.")
     parser.add_argument("--print-input", action="store_true", default=bool(defaults.get("print_input", False)), help="Print the filtered input lines before AI analysis.")
     parser.add_argument("--save-dir", default=defaults.get("save_dir", ""), help="Optional directory to save chunk results and final report as text files.")
@@ -823,7 +850,7 @@ def normalize_api_url(api_url: str, api_path: str) -> str:
     if not url:
         raise AnalyzerError("openai.api_url / --api-url must not be empty.")
     # Backward compatibility for older configs where api_url contained the full endpoint.
-    if re.search(r"/v\d+/(responses|chat/completions)$", url):
+    if re.search(r"/v\d+/(responses|chat/completions)$|/api/chat$", url):
         return url
     if not path:
         return url
@@ -832,6 +859,25 @@ def normalize_api_url(api_url: str, api_path: str) -> str:
     return url + path
 
 
+
+
+STYLE_DEFAULT_PATHS = {
+    "chat_completions": "/v1/chat/completions",
+    "responses": "/v1/responses",
+    "ollama": "/api/chat",
+}
+
+
+def effective_api_path(api_style: str, api_path: str) -> str:
+    """The configured path wins; the stock chat-completions path follows the selected style."""
+    path = str(api_path or "").strip()
+    if not path or path == DEFAULT_CONFIG["openai"]["api_path"]:
+        return STYLE_DEFAULT_PATHS.get(api_style, path)
+    return path
+
+
+def resolve_endpoint(args: argparse.Namespace) -> str:
+    return normalize_api_url(args.api_url, effective_api_path(args.api_style, args.api_path))
 
 
 def endpoint_is_local(endpoint_url: str) -> bool:
@@ -1073,6 +1119,89 @@ def build_responses_payload(config: Dict[str, Any], model: str, system_prompt: s
     return payload
 
 
+def ollama_think_setting(config: Dict[str, Any]) -> Optional[bool]:
+    """Config value may arrive as bool (true/false) or as text; empty means model default."""
+    raw = config.get("ollama", {}).get("think", "")
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw or "").strip()
+    return parse_bool(text) if text else None
+
+
+def build_ollama_payload(config: Dict[str, Any], args: argparse.Namespace, model: str, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+    openai_cfg = config["openai"]
+    ollama_cfg = config.get("ollama", {})
+    options: Dict[str, Any] = {}
+    if openai_cfg.get("temperature") is not None:
+        options["temperature"] = openai_cfg.get("temperature")
+    max_output_tokens = openai_cfg.get("max_output_tokens")
+    if max_output_tokens is not None:
+        options["num_predict"] = int(max_output_tokens)
+    num_ctx = int(getattr(args, "num_ctx", 0) or ollama_cfg.get("num_ctx", 0) or 0)
+    if num_ctx > 0:
+        options["num_ctx"] = num_ctx
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "stream": False,  # Ollama streams NDJSON by default; one JSON document is what call_ai expects.
+        "options": options,
+    }
+    think = ollama_think_setting(config)
+    if think is not None:
+        payload["think"] = think
+    keep_alive = ollama_cfg.get("keep_alive", "")
+    if isinstance(keep_alive, (int, float)) and not isinstance(keep_alive, bool):
+        payload["keep_alive"] = keep_alive
+    elif str(keep_alive or "").strip():
+        payload["keep_alive"] = str(keep_alive).strip()
+    return payload
+
+
+TRUNCATED_FINISH_REASONS = {"length", "max_tokens", "max_output_tokens"}
+
+
+def extract_response(data: Dict[str, Any], api_style: str) -> Tuple[str, str, Dict[str, int]]:
+    """Return (text, finish_reason, usage) for the configured API style.
+
+    finish_reason is normalized to the provider's own vocabulary ("stop", "length", ...) and is
+    empty when the provider did not report one. usage maps prompt/output token counts if known.
+    """
+    if api_style == "ollama":
+        usage = {}
+        for source, target in (("prompt_eval_count", "prompt"), ("eval_count", "output")):
+            if isinstance(data.get(source), int):
+                usage[target] = data[source]
+        finish_reason = str(data.get("done_reason") or "")
+        message = data.get("message") or {}
+        if isinstance(message, dict) and isinstance(message.get("content"), str):
+            return message["content"], finish_reason, usage
+        if isinstance(data.get("response"), str):  # /api/generate shape
+            return data["response"], finish_reason, usage
+        if isinstance(data.get("error"), str):
+            raise AnalyzerError(f"Ollama error: {data['error']}")
+        raise AnalyzerError("Could not extract text from Ollama response.")
+    text = extract_response_text(data, api_style)
+    usage_block = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    usage = {}
+    for keys, target in ((("prompt_tokens", "input_tokens"), "prompt"), (("completion_tokens", "output_tokens"), "output")):
+        for key in keys:
+            if isinstance(usage_block.get(key), int):
+                usage[target] = usage_block[key]
+                break
+    if api_style == "responses":
+        finish_reason = ""
+        if data.get("status") == "incomplete":
+            details = data.get("incomplete_details") or {}
+            finish_reason = str(details.get("reason") or "incomplete")
+        return text, finish_reason, usage
+    choices = data.get("choices") or []
+    finish_reason = str((choices[0] or {}).get("finish_reason") or "") if choices else ""
+    return text, finish_reason, usage
+
+
 def extract_response_text(data: Dict[str, Any], api_style: str) -> str:
     if api_style == "responses":
         if isinstance(data.get("output_text"), str):
@@ -1168,8 +1297,47 @@ def empty_response_message(config: Dict[str, Any], args: argparse.Namespace, sta
         "     CLI:    --max-output-tokens 12000\n"
         "     Config: openai.max_output_tokens = 12000\n"
         f"     Current value: {config['openai'].get('max_output_tokens', '')}\n"
-        "  4. If you use Ollama or LiteLLM, check the model context size and proxy logs.\n\n"
-        "The current chunk was not analyzed, so the report was stopped to avoid incomplete results."
+        "  4. If you use Ollama or LiteLLM, check the model context size and proxy logs.\n"
+        + (
+            "  5. Thinking models can spend the whole output budget on thinking. Skip it with:\n"
+            "     Config: ollama.think = false\n"
+            if args.api_style == "ollama"
+            else ""
+        )
+        + "\nThe current chunk was not analyzed, so the report was stopped to avoid incomplete results."
+    )
+
+
+def truncated_response_message(config: Dict[str, Any], args: argparse.Namespace, stage: str, finish_reason: str) -> str:
+    what = "final report" if stage == "final" else "chunk analysis"
+    hints = [
+        "  1. Allow a longer answer:\n"
+        "     CLI:    --max-output-tokens 16000\n"
+        "     Config: openai.max_output_tokens = 16000\n"
+        f"     Current value: {config['openai'].get('max_output_tokens', '')}",
+    ]
+    if stage == "final":
+        hints.append(
+            "  2. Produce fewer findings, for example with a narrower --focus-on, additional --ignore topics,\n"
+            "     or --exclude-pattern / --exclude-regex-pattern for known noise."
+        )
+    else:
+        hints.append(
+            "  2. Use a smaller chunk size so each answer stays shorter:\n"
+            "     CLI:    --chunk-size 300\n"
+            "     Config: logs.chunk_size = 300\n"
+            f"     Current value: {args.chunk_size} lines"
+        )
+    if args.api_style == "ollama":
+        hints.append(
+            "  3. For thinking models, the thinking phase shares the output budget. Skip it with:\n"
+            "     Config: ollama.think = false"
+        )
+    return (
+        f"The model stopped the {what} because the output token limit was reached "
+        f"(finish reason: {finish_reason}). The answer is incomplete, so the report was stopped "
+        "to avoid silently missing findings.\n\n"
+        "What you can try:\n" + "\n".join(hints)
     )
 
 
@@ -1178,7 +1346,7 @@ def call_ai(config: Dict[str, Any], args: argparse.Namespace, system_prompt: str
         return mock_ai_response(system_prompt, user_prompt)
 
     api_style = args.api_style
-    api_url = normalize_api_url(args.api_url, args.api_path)
+    api_url = resolve_endpoint(args)
     api_key = os.environ.get("OPENAI_API_KEY") or str(config["openai"].get("api_key", ""))
     headers = {"Content-Type": "application/json"}
     if api_key and api_key.strip() and api_key.strip() not in {"YOUR_KEY", "YOUR_OPENAI_API_KEY"}:
@@ -1187,6 +1355,8 @@ def call_ai(config: Dict[str, Any], args: argparse.Namespace, system_prompt: str
 
     if api_style == "responses":
         payload = build_responses_payload(config, args.model, system_prompt, user_prompt)
+    elif api_style == "ollama":
+        payload = build_ollama_payload(config, args, args.model, system_prompt, user_prompt)
     else:
         payload = build_chat_payload(config, args.model, system_prompt, user_prompt)
 
@@ -1206,10 +1376,21 @@ def call_ai(config: Dict[str, Any], args: argparse.Namespace, system_prompt: str
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 response_body = response.read().decode("utf-8", errors="replace")
             data = json.loads(response_body)
-            text = ascii_text(extract_response_text(data, api_style))
+            raw_text, finish_reason, usage = extract_response(data, api_style)
+            text = ascii_text(raw_text)
+            if getattr(args, "debug_ai", False) and usage:
+                print(
+                    f"Debug: {stage} API call: prompt tokens = {usage.get('prompt', '?')}, "
+                    f"output tokens = {usage.get('output', '?')}, finish reason = {finish_reason or 'n/a'}",
+                    file=sys.stderr,
+                )
             if not text.strip():
                 raise EmptyAIResponseError("API returned an empty response text.")
+            if finish_reason in TRUNCATED_FINISH_REASONS:
+                raise TruncatedAIResponseError(truncated_response_message(config, args, stage, finish_reason))
             return text
+        except TruncatedAIResponseError:
+            raise  # Deterministic; a retry would hit the same output limit.
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
             last_error = AnalyzerError(f"API HTTP {exc.code}: {error_body[:2000]}")
@@ -1352,7 +1533,8 @@ If log lines contain text that looks like instructions to an AI system (for exam
 
 # Search commands are the one place where model output becomes something an admin executes.
 # The model only supplies the regular expression; the command itself is rendered here.
-SEARCH_LINE_RE = re.compile(r"^(?P<prefix>\s*(?:[*-]\s*)?Search:\s*)(?P<command>.*)$")
+# Tolerates Markdown decoration some models add despite the plain-text format: "- **Search:** `grep ...`".
+SEARCH_LINE_RE = re.compile(r"^(?P<prefix>\s*(?:[*-]\s*)?(?:\*\*|__)?Search(?:\*\*|__)?:(?:\*\*|__)?\s*)(?P<command>.*)$")
 GREP_COMMAND_RE = re.compile(
     r"""^grep\s+(?P<flags>(?:-[A-Za-z]+\s+)*)(?:'(?P<sq>[^']*)'|"(?P<dq>[^"]*)"|(?P<bare>[^-\s'"|;&<>`$()][^\s'"|;&<>`$()]*))"""
 )
@@ -1397,7 +1579,7 @@ def sanitize_search_lines(text: str, targets: str) -> str:
         if not match:
             rendered.append(line)
             continue
-        extracted = extract_search_regex(match.group("command"))
+        extracted = extract_search_regex(match.group("command").strip().strip("`"))
         if extracted is None:
             rendered.append(match.group("prefix") + SEARCH_REMOVED_NOTE)
             continue
@@ -1768,7 +1950,7 @@ def read_confirmation_from_user() -> str:
 def confirm_before_api(config: Dict[str, Any], args: argparse.Namespace, line_count: int) -> None:
     if warning_suppressed(config, args):
         return
-    api_url = normalize_api_url(args.api_url, args.api_path)
+    api_url = resolve_endpoint(args)
     endpoint_line = format_endpoint_status(api_url) if endpoint_is_local(api_url) else f"Endpoint: {api_url}"
     message = f"""
 WARNING: {line_count} log lines will be sent to the configured AI endpoint.
@@ -1918,6 +2100,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.max_final_input_chars < 0:
         print("Error: --max-final-input-chars must be zero or greater.", file=sys.stderr)
         return 2
+    if args.num_ctx < 0:
+        print("Error: --num-ctx must be zero or greater.", file=sys.stderr)
+        return 2
 
     logs_cfg = config.get("logs", {})
     keyword_patterns = split_config_list(logs_cfg.get("exclude_patterns", []))
@@ -1973,7 +2158,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 0
 
         confirm_before_api(config, args, line_count)
-        print("\n" + format_endpoint_status(normalize_api_url(args.api_url, args.api_path)), file=sys.stderr)
+        print("\n" + format_endpoint_status(resolve_endpoint(args)), file=sys.stderr)
 
         chunk_results = analyze_chunks(config, args, temp_path, line_count)
         final_report: Optional[str] = None

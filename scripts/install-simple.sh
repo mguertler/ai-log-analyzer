@@ -205,6 +205,7 @@ chmod 0600 "$CONFIG_PATH" 2>/dev/null || true
 if ask_yes_no "Edit configuration interactively?" "Y"; then
   echo ""
   echo "Chat Completions API is used by default for OpenAI, LiteLLM, and Ollama compatibility."
+  echo "For Ollama's native API (per-call context size, thinking control) set openai.api_style = ollama in the config afterwards."
   echo "Examples:"
   echo "  OpenAI:  https://api.openai.com"
   echo "  LiteLLM: http://127.0.0.1:4000"

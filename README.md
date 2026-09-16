@@ -100,7 +100,7 @@ Linux logs are noisy. Important problems are often buried between harmless warni
 - Creates concise, prioritized reports with actionable checks
 - Keeps search commands for every finding
 - Supports `--focus-on`, `--gently-ignore` and `--ignore`
-- Supports local and cloud OpenAI-compatible endpoints
+- Supports local and cloud OpenAI-compatible endpoints, plus Ollama's native API with per-call context size
 - Suitable for daily cron-based email reports
 
 ## Quick examples
@@ -341,6 +341,25 @@ openai.api_path = /v1/chat/completions
 openai.api_style = chat_completions
 openai.model = Gemma4-26b
 ```
+
+Ollama's native API (`/api/chat`) lets you set the context size per call, so you do not need a custom Modelfile for large contexts, and lets you control thinking and model unloading:
+
+```text
+openai.api_url = http://127.0.0.1:11434
+openai.api_style = ollama
+openai.model = qwen3.8:27b
+ollama.num_ctx = 65536
+ollama.think = false
+ollama.keep_alive = 0
+```
+
+- `ollama.num_ctx` (or `--num-ctx N`) is the context window requested for every call; `0` keeps the model default. Ollama reloads the model when it changes.
+- `ollama.think` skips (`false`) or forces (`true`) the thinking phase of models such as Qwen3; empty keeps the model default. Thinking shares the output token budget with the answer.
+- `ollama.keep_alive` controls how long the model stays loaded afterwards, for example `0` to free VRAM after a cron run.
+
+With `--api-style ollama` the endpoint path switches to `/api/chat` automatically unless `openai.api_path` is set to something other than the default.
+
+With every API style, an answer that was cut off by the output token limit (`finish_reason` / `done_reason` = `length`) aborts the run with a hint instead of producing a report that silently misses findings.
 
 ## Daily reports by email
 

@@ -110,11 +110,13 @@ mail.use_starttls = false
 # Advanced Parameters
 
 # Function: API endpoint path appended to openai.api_url.
-# Syntax: /v1/chat/completions recommended. /v1/responses is available for advanced use.
+# Syntax: /v1/chat/completions recommended. Leave it at this default and the path follows openai.api_style
+# automatically (/v1/responses for responses, /api/chat for ollama). Set it explicitly only for unusual proxies.
 openai.api_path = /v1/chat/completions
 
 # Function: Request payload style.
-# Syntax: chat_completions recommended. responses is available for advanced use.
+# Syntax: chat_completions recommended for OpenAI, LiteLLM and Ollama's OpenAI-compatible endpoint.
+# ollama uses Ollama's native /api/chat API and enables the ollama.* settings below. responses is available for advanced use.
 openai.api_style = chat_completions
 
 # Function: Sampling temperature. Lower values usually improve deterministic formatting.
@@ -140,6 +142,21 @@ openai.max_tokens_field = max_tokens
 # Function: Extra HTTP headers sent to the API.
 # Syntax: JSON object, for example {"X-Header":"value"}. Use {} for none.
 openai.extra_headers = {}
+
+# Native Ollama API (only used with openai.api_style = ollama)
+
+# Function: Context window (num_ctx) requested for every call, so no custom Modelfile is needed for large contexts.
+# Syntax: integer tokens, for example 32768 or 65536. 0 keeps the model default. CLI alternative: --num-ctx N
+# Ollama reloads the model when this changes. Keep chunk size and this value consistent: a 500 line chunk needs roughly 16k-24k tokens.
+ollama.num_ctx = 0
+
+# Function: Thinking mode for models that support it, for example Qwen3.
+# Syntax: empty keeps the model default; false skips the thinking phase (faster, uses less of the output budget); true forces it.
+ollama.think = ""
+
+# Function: How long Ollama keeps the model loaded after the last call.
+# Syntax: empty keeps the server default; duration such as 5m or 1h; 0 unloads right after the run (useful for cron); -1 keeps it loaded.
+ollama.keep_alive = ""
 
 # Function: Default output mode.
 # Syntax: report, errors, or all. report prints only the final report and is best for normal use.
