@@ -40,7 +40,7 @@ except ImportError:  # Keep direct script usage working before package installat
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 
-__version__ = "0.4.3"
+__version__ = "0.4.4"
 
 APP_NAME = "ai-log-analyzer"
 CONFIG_BASENAME = "ai-log-analyzer.conf"
@@ -840,6 +840,7 @@ Run:
     basic = parser.add_argument_group("basic options")
     advanced = parser.add_argument_group("advanced options")
     basic.add_argument("-h", "--help", action="help", help="Show this help and exit.")
+    basic.add_argument("--version", action="version", version=f"ai-log-analyzer {__version__}", help="Show version and exit.")
     basic.add_argument("--no-warn", action="store_true", help="Suppress the data privacy and cost warning before the first API call.")
     basic.add_argument("--focus-on", metavar="TOPIC", default=logs.get("focus_on", ""), help="Ask the AI to analyze only this topic, e.g. 'security incidents and network problems'.")
     basic.add_argument("--ignore", metavar="TOPICS", default=logs.get("ignore", ""), help="Ask the AI to completely ignore these topics in the report, e.g. 'desktop notifications, printer warnings'.")
@@ -850,7 +851,6 @@ Run:
     basic.add_argument("--no-think", dest="think", action="store_false", help="Skip the thinking phase with --api ollama: 3-5x faster and frees context/output budget.")
     basic.add_argument("--dry-run", action="store_true", help="Collect/count log lines and exit without calling the API.")
     advanced.add_argument("--config", metavar="FILE", help="Path to key=value configuration file (.conf); legacy JSON is also accepted.")
-    advanced.add_argument("--version", action="version", version=f"ai-log-analyzer {__version__}", help="Show version and exit.")
     advanced.add_argument("--print-config-path", action="store_true", help="Print the config file path that would be used (after --config, AI_LOG_ANALYZER_CONFIG and the system path) and exit.")
     advanced.add_argument("--init-config", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("paths", nargs="*", metavar="LOGFILE", help="Log file(s) to analyze. If omitted, ai-log-analyzer reads log lines from stdin.")

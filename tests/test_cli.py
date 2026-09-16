@@ -311,10 +311,10 @@ def test_help_is_grouped_and_ends_with_the_eye_catcher(capsys, config_path):
     assert out.startswith("usage: ai-log-analyzer [options] [LOGFILE ...]\n")
     basic = out[out.index("basic options:"):out.index("advanced options:")]
     advanced = out[out.index("advanced options:"):out.index("examples:")]
-    for flag in ("--help", "--no-warn", "--focus-on", "--ignore", "--gently-ignore", "--mode", "--mail", "--think", "--no-think", "--dry-run"):
+    for flag in ("--help", "--version", "--no-warn", "--focus-on", "--ignore", "--gently-ignore", "--mode", "--mail", "--think", "--no-think", "--dry-run"):
         assert f"  {flag}" in basic or f", {flag}" in basic, flag
         assert f"  {flag} " not in advanced and f"  {flag}\n" not in advanced, flag
-    for flag in ("--config", "--version", "--api", "--chunk-size", "--no-endpoint-check", "--debug-ai"):
+    for flag in ("--config", "--api", "--chunk-size", "--no-endpoint-check", "--debug-ai"):
         assert f"  {flag}" in advanced, flag
     assert "--mock-ai" not in out and "--init-config" not in out
     assert out.rstrip().endswith(
