@@ -174,10 +174,23 @@ extra_keys = [key for key in old_values if key not in used]
 if extra_keys:
     out.append("")
     out.append("# Preserved custom parameters from previous config")
+    out.append("# These keys are not part of the current example config. If a parameter was renamed in this")
+    out.append("# version, move its value to the new key above; keys unknown to ai-log-analyzer are ignored.")
     for key in extra_keys:
         out.extend(old_values[key])
 
 out_path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+
+if extra_keys:
+    import sys
+
+    print("", file=sys.stderr)
+    print("WARNING: The previous config contains parameters that are not part of the current example config:", file=sys.stderr)
+    for key in extra_keys:
+        print(f"  {key}", file=sys.stderr)
+    print("They were kept at the end of the new config, but if they were renamed in this version they have no", file=sys.stderr)
+    print("effect anymore. Compare them with the parameter names in the new config and move the values manually.", file=sys.stderr)
+    print("", file=sys.stderr)
 PY
 }
 

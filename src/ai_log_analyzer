@@ -40,7 +40,7 @@ except ImportError:  # Keep direct script usage working before package installat
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 APP_NAME = "ai-log-analyzer"
 CONFIG_BASENAME = "ai-log-analyzer.conf"
@@ -868,8 +868,18 @@ def build_parser(config: Dict[str, Any]) -> argparse.ArgumentParser:
     return parser
 
 
+BACKENDS = ("openai", "ollama")
+OPENAI_API_STYLES = ("chat_completions", "responses")
+
+
 def resolve_backend(config: Dict[str, Any], args: argparse.Namespace) -> None:
-    """Fill CLI gaps from the selected backend section; the other section is ignored entirely."""
+    """Fill CLI gaps from the selected backend section; the other section is ignored entirely.
+
+    argparse validates choices only for values given on the command line, so values that
+    come from the config file are checked here.
+    """
+    if args.api not in BACKENDS:
+        raise AnalyzerError(f"ai.api must be one of {', '.join(BACKENDS)}; got {args.api!r}.")
     backend = config[args.api]
     if args.api_url is None:
         args.api_url = str(backend.get("api_url", ""))
@@ -886,6 +896,11 @@ def resolve_backend(config: Dict[str, Any], args: argparse.Namespace) -> None:
     else:
         if args.api_style is None:
             args.api_style = str(config["openai"].get("api_style", "chat_completions"))
+        if args.api_style not in OPENAI_API_STYLES:
+            raise AnalyzerError(
+                f"openai.api_style must be one of {', '.join(OPENAI_API_STYLES)}; got {args.api_style!r}. "
+                "For Ollama's native API set ai.api = ollama instead."
+            )
         if args.think is not None or args.num_ctx is not None:
             print("Note: --think/--no-think and --num-ctx only affect --api ollama; ignored for the openai backend.", file=sys.stderr)
         args.num_ctx = 0
@@ -918,7 +933,6 @@ def normalize_api_url(api_url: str, api_path: str) -> str:
 STYLE_DEFAULT_PATHS = {
     "chat_completions": "/v1/chat/completions",
     "responses": "/v1/responses",
-    "ollama": "/api/chat",
 }
 
 
@@ -2219,7 +2233,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.max_final_input_chars < 0:
         print("Error: --max-final-input-chars must be zero or greater.", file=sys.stderr)
         return 2
-    resolve_backend(config, args)
+    try:
+        resolve_backend(config, args)
+    except AnalyzerError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
     if args.num_ctx < 0:
         print("Error: --num-ctx must be zero or greater.", file=sys.stderr)
         return 2

@@ -16,7 +16,7 @@ def _args(**overrides):
         api="ollama",
         api_style="ollama",
         api_url="http://127.0.0.1:11434",
-        api_path="/v1/chat/completions",
+        api_path="/api/chat",  # what resolve_backend fills in from ollama.api_path
         model="qwen3.8:27b",
         chunk_size=500,
         num_ctx=0,
@@ -37,9 +37,9 @@ def _config(**ollama_overrides):
     "style,path,expected",
     [
         ("chat_completions", "/v1/chat/completions", "/v1/chat/completions"),
-        ("ollama", "/v1/chat/completions", "/api/chat"),
-        ("ollama", "", "/api/chat"),
         ("responses", "/v1/chat/completions", "/v1/responses"),
+        ("responses", "/custom/v1/responses", "/custom/v1/responses"),
+        ("ollama", "/api/chat", "/api/chat"),
         ("ollama", "/custom/proxy/chat", "/custom/proxy/chat"),
         ("chat_completions", "/openai/v1/chat/completions", "/openai/v1/chat/completions"),
     ],
@@ -51,7 +51,7 @@ def test_effective_api_path_follows_style_unless_overridden(style, path, expecte
 def test_resolve_endpoint_and_legacy_full_url():
     assert ala.resolve_endpoint(_args()) == "http://127.0.0.1:11434/api/chat"
     assert ala.resolve_endpoint(_args(api_url="http://shark:11434/api/chat")) == "http://shark:11434/api/chat"
-    assert ala.resolve_endpoint(_args(api_style="chat_completions")) == "http://127.0.0.1:11434/v1/chat/completions"
+    assert ala.resolve_endpoint(_args(api="openai", api_style="chat_completions", api_path="/v1/chat/completions")) == "http://127.0.0.1:11434/v1/chat/completions"
 
 
 def test_ollama_payload_shape_and_options():
@@ -344,3 +344,26 @@ def test_help_lists_think_flags(capsys, config_path):
         ala.main(["--config", str(config_path), "--help"])
     out = capsys.readouterr().out
     assert "--think" in out and "--no-think" in out
+
+
+@pytest.mark.parametrize(
+    "line,message",
+    [
+        ("openai.api_style = ollama", "openai.api_style must be one of chat_completions, responses; got 'ollama'"),
+        ("openai.api_style = grpc", "openai.api_style must be one of"),
+        ("ai.api = gpt", "ai.api must be one of openai, ollama; got 'gpt'"),
+    ],
+)
+def test_invalid_backend_values_from_config_are_rejected(tmp_path, capsys, line, message):
+    path = tmp_path / "t.conf"
+    path.write_text(line + "\n")
+    code = ala.main(["--config", str(path), "--mock-ai", "--dry-run", str(tmp_path / "t.conf")])
+    err = capsys.readouterr().err
+    assert code == 2
+    assert message in err
+    if "api_style" in line and "ollama" in line:
+        assert "set ai.api = ollama instead" in err
+
+
+def test_ollama_style_no_longer_maps_the_openai_default_path():
+    assert ala.effective_api_path("ollama", "/v1/chat/completions") == "/v1/chat/completions"
