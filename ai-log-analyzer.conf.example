@@ -6,6 +6,17 @@
 
 # Basic Parameters
 
+# Function: AI backend to use. openai talks to any OpenAI-compatible endpoint (OpenAI, LiteLLM, Ollama's /v1 API)
+# and uses the openai.* settings. ollama talks to Ollama's native /api/chat API and uses the ollama.* settings.
+# Syntax: openai or ollama. The settings of the other backend are ignored. CLI alternative: --api openai|ollama
+ai.api = openai
+
+# Function: Maximum output tokens for each AI response (both backends).
+# Syntax: integer token limit. 8192 is a practical default; use more for thinking models, whose thinking shares this budget.
+ai.max_output_tokens = 8192
+
+# OpenAI-compatible backend (ai.api = openai)
+
 # Function: API key for OpenAI or an OpenAI-compatible server.
 # Syntax: string. Empty means: read OPENAI_API_KEY from the environment if set.
 openai.api_key = ""
@@ -18,9 +29,32 @@ openai.api_url = https://api.openai.com
 # Syntax: OpenAI model name or local/proxy alias, for example gpt-5-mini, Gemma4-26b, or local.
 openai.model = gpt-5-mini
 
-# Function: Maximum output tokens for each AI response.
-# Syntax: integer token limit. 8192 is a practical default for reports and local/proxy backends.
-openai.max_output_tokens = 8192
+# Native Ollama backend (ai.api = ollama)
+
+# Function: Ollama server base URL.
+# Syntax: URL, for example http://127.0.0.1:11434 or http://gpu-host:11434
+ollama.api_url = http://127.0.0.1:11434
+
+# Function: Ollama model tag as shown by "ollama list".
+# Syntax: model tag, for example gemma4:26b or qwen3.8:27b
+ollama.model = gemma4:26b
+
+# Function: Context window (num_ctx) requested for every call, so no custom Modelfile is needed for large contexts.
+# Syntax: integer tokens, for example 32768 or 65536. 0 keeps the model default. CLI alternative: --num-ctx N
+# Ollama reloads the model when this changes. Keep chunk size and this value consistent: a 500 line chunk needs roughly 16k-24k tokens.
+ollama.num_ctx = 0
+
+# Function: Thinking mode for models that support it, for example Qwen3. Better prioritization, deduplication and
+# format adherence, but 3-5x slower, and the thinking shares the output budget and context window with the answer.
+# Syntax: true (default) uses thinking; models without thinking support are detected and run without it.
+# false skips the thinking phase. Empty keeps the model default. CLI alternative: --think / --no-think
+ollama.think = true
+
+# Function: How long Ollama keeps the model loaded after the last call.
+# Syntax: empty keeps the server default; duration such as 5m or 1h; 0 unloads right after the run (useful for cron); -1 keeps it loaded.
+ollama.keep_alive = ""
+
+# Log input
 
 # Function: Number of log lines per AI request.
 # Syntax: integer line count. 500 is recommended for 64k context-size thinking models.
@@ -109,54 +143,42 @@ mail.use_starttls = false
 
 # Advanced Parameters
 
+# Function: Sampling temperature (both backends). Lower values usually improve deterministic formatting.
+# Syntax: decimal number, for example 0, 0.1, 0.2.
+ai.temperature = 0.1
+
+# Function: HTTP timeout for one API attempt (both backends).
+# Syntax: integer seconds.
+ai.timeout_seconds = 120
+
+# Function: Number of retries after the initial API attempt (both backends).
+# Syntax: integer. Default 1 means: one initial attempt plus one retry. Consider 3 when logs.max_parallel > 1 against rate-limited cloud APIs.
+ai.max_retries = 1
+
+# Function: Base delay between retries (both backends). Attempt number is multiplied by this value.
+# Syntax: seconds as integer or decimal, for example 2 or 5.0. A Retry-After header sent by the API takes precedence (capped at 60 seconds).
+ai.retry_backoff_seconds = 2
+
 # Function: API endpoint path appended to openai.api_url.
 # Syntax: /v1/chat/completions recommended. Leave it at this default and the path follows openai.api_style
-# automatically (/v1/responses for responses, /api/chat for ollama). Set it explicitly only for unusual proxies.
+# automatically (/v1/responses for responses). Set it explicitly only for unusual proxies.
 openai.api_path = /v1/chat/completions
 
-# Function: Request payload style.
-# Syntax: chat_completions recommended for OpenAI, LiteLLM and Ollama's OpenAI-compatible endpoint.
-# ollama uses Ollama's native /api/chat API and enables the ollama.* settings below. responses is available for advanced use.
+# Function: Request payload style for the openai backend.
+# Syntax: chat_completions recommended for OpenAI, LiteLLM and Ollama's OpenAI-compatible endpoint. responses is available for advanced use.
 openai.api_style = chat_completions
-
-# Function: Sampling temperature. Lower values usually improve deterministic formatting.
-# Syntax: decimal number, for example 0, 0.1, 0.2.
-openai.temperature = 0.1
-
-# Function: HTTP timeout for one API attempt.
-# Syntax: integer seconds.
-openai.timeout_seconds = 120
-
-# Function: Number of retries after the initial API attempt.
-# Syntax: integer. Default 1 means: one initial attempt plus one retry. Consider 3 when logs.max_parallel > 1 against rate-limited cloud APIs.
-openai.max_retries = 1
-
-# Function: Base delay between retries. Attempt number is multiplied by this value.
-# Syntax: seconds as integer or decimal, for example 2 or 5.0. A Retry-After header sent by the API takes precedence (capped at 60 seconds).
-openai.retry_backoff_seconds = 2
 
 # Function: Name of the max-token field for chat_completions payloads.
 # Syntax: max_tokens for most OpenAI-compatible APIs; max_completion_tokens for selected newer APIs.
 openai.max_tokens_field = max_tokens
 
-# Function: Extra HTTP headers sent to the API.
+# Function: Extra HTTP headers sent to the openai backend.
 # Syntax: JSON object, for example {"X-Header":"value"}. Use {} for none.
 openai.extra_headers = {}
 
-# Native Ollama API (only used with openai.api_style = ollama)
-
-# Function: Context window (num_ctx) requested for every call, so no custom Modelfile is needed for large contexts.
-# Syntax: integer tokens, for example 32768 or 65536. 0 keeps the model default. CLI alternative: --num-ctx N
-# Ollama reloads the model when this changes. Keep chunk size and this value consistent: a 500 line chunk needs roughly 16k-24k tokens.
-ollama.num_ctx = 0
-
-# Function: Thinking mode for models that support it, for example Qwen3.
-# Syntax: empty keeps the model default; false skips the thinking phase (faster, uses less of the output budget); true forces it.
-ollama.think = ""
-
-# Function: How long Ollama keeps the model loaded after the last call.
-# Syntax: empty keeps the server default; duration such as 5m or 1h; 0 unloads right after the run (useful for cron); -1 keeps it loaded.
-ollama.keep_alive = ""
+# Function: API endpoint path appended to ollama.api_url.
+# Syntax: /api/chat unless a proxy in front of Ollama uses a different prefix.
+ollama.api_path = /api/chat
 
 # Function: Default output mode.
 # Syntax: report, errors, or all. report prints only the final report and is best for normal use.

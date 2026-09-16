@@ -16,6 +16,7 @@ import ai_log_analyzer as ala
 def _args(**overrides):
     base = dict(
         mock_ai=False,
+        api="openai",
         api_style="chat_completions",
         api_url="https://api.example.test",
         api_path="/v1/chat/completions",
@@ -28,7 +29,8 @@ def _args(**overrides):
 
 def _config(**openai_overrides):
     config = copy.deepcopy(ala.DEFAULT_CONFIG)
-    config["openai"].update({"max_retries": 2, "retry_backoff_seconds": 2, **openai_overrides})
+    config["ai"].update({"max_retries": 2, "retry_backoff_seconds": 2})
+    config["openai"].update(openai_overrides)
     return config
 
 
@@ -150,7 +152,7 @@ def test_authorization_header_only_with_real_key(monkeypatch):
     assert seen["headers"]["Authorization"] == "Bearer sk-test"
     assert seen["body"]["messages"][0] == {"role": "system", "content": "sys"}
     assert seen["body"]["messages"][1] == {"role": "user", "content": "user"}
-    assert seen["body"]["max_tokens"] == ala.DEFAULT_CONFIG["openai"]["max_output_tokens"]
+    assert seen["body"]["max_tokens"] == ala.DEFAULT_CONFIG["ai"]["max_output_tokens"]
 
 
 def test_responses_style_payload_and_extraction(monkeypatch):

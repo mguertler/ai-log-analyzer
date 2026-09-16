@@ -130,7 +130,7 @@ def test_real_http_ollama_native_round_trip(config_path, endpoint, log_file, cap
     endpoint.style = "ollama"
     path = log_file(make_lines(3))
     code, out, err = _run(
-        config_path, endpoint, str(path), "--api-style", "ollama", "--num-ctx", "4096", "--debug-ai", "--mode", "all", capsys=capsys
+        config_path, endpoint, str(path), "--api", "ollama", "--num-ctx", "4096", "--debug-ai", "--mode", "all", capsys=capsys
     )
     assert code == 0, err
     assert "http://127.0.0.1" in err and "/api/chat" in err
@@ -138,9 +138,9 @@ def test_real_http_ollama_native_round_trip(config_path, endpoint, log_file, cap
     body = endpoint.requests[0]["json"]
     assert body["stream"] is False
     assert body["options"]["num_ctx"] == 4096
-    assert body["options"]["num_predict"] == ala.DEFAULT_CONFIG["openai"]["max_output_tokens"]
-    assert body["options"]["temperature"] == ala.DEFAULT_CONFIG["openai"]["temperature"]
-    assert "think" not in body and "keep_alive" not in body
+    assert body["options"]["num_predict"] == ala.DEFAULT_CONFIG["ai"]["max_output_tokens"]
+    assert body["options"]["temperature"] == ala.DEFAULT_CONFIG["ai"]["temperature"]
+    assert body["think"] is True and "keep_alive" not in body
     assert body["messages"][0]["role"] == "system" and "Untrusted input handling" in body["messages"][0]["content"]
     # Token usage surfaces under --debug-ai; the malicious Search line is still sanitized.
     assert "Debug: chunk API call: prompt tokens = 321, output tokens = 45, finish reason = stop" in err
@@ -154,9 +154,16 @@ def test_real_http_ollama_truncated_answer_aborts_without_retry(config_path, end
     endpoint.script.append(
         lambda p: (200, {}, {"message": {"role": "assistant", "content": "* Error: cut off mid"}, "done": True, "done_reason": "length"})
     )
-    code, out, err = _run(config_path, endpoint, str(log_file(make_lines(2))), "--api-style", "ollama", capsys=capsys)
+    code, out, err = _run(config_path, endpoint, str(log_file(make_lines(2))), "--api", "ollama", capsys=capsys)
     assert code == 1
     assert len(endpoint.requests) == 1
     assert "output token limit was reached (finish reason: length)" in err
     assert "ollama.think = false" in err
     assert "Final report" not in out
+
+
+def test_real_http_ollama_no_think_flag(config_path, endpoint, log_file, capsys):
+    endpoint.style = "ollama"
+    code, _, err = _run(config_path, endpoint, str(log_file(["quiet line"])), "--api", "ollama", "--no-think", capsys=capsys)
+    assert code == 0, err
+    assert endpoint.requests[0]["json"]["think"] is False

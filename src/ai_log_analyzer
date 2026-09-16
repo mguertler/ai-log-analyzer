@@ -40,7 +40,7 @@ except ImportError:  # Keep direct script usage working before package installat
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 
-__version__ = "0.3.9"
+__version__ = "0.4.0"
 
 APP_NAME = "ai-log-analyzer"
 CONFIG_BASENAME = "ai-log-analyzer.conf"
@@ -143,17 +143,20 @@ Notes
 """
 
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "openai": {
-        "api_key": "",  # Prefer OPENAI_API_KEY in the environment or put the key here.
-        "api_url": "https://api.openai.com",  # Base URL only, without /v1/... endpoint path.
-        "api_path": "/v1/chat/completions",
-        "api_style": "chat_completions",  # chat_completions, responses, or ollama (native /api/chat)
-        "model": "gpt-5-mini",
-        "temperature": 0.1,
+    "ai": {
+        "api": "openai",  # openai (OpenAI-compatible endpoints) or ollama (native /api/chat). The other section is ignored.
         "max_output_tokens": 8192,
+        "temperature": 0.1,
         "timeout_seconds": 120,
         "max_retries": 1,  # Retries after the initial attempt. Consider 3 with max_parallel > 1 against rate-limited APIs.
         "retry_backoff_seconds": 2,  # A Retry-After header from the API takes precedence.
+    },
+    "openai": {  # Only used with ai.api = openai.
+        "api_key": "",  # Prefer OPENAI_API_KEY in the environment or put the key here.
+        "api_url": "https://api.openai.com",  # Base URL only, without /v1/... endpoint path.
+        "api_path": "/v1/chat/completions",
+        "api_style": "chat_completions",  # chat_completions or responses
+        "model": "gpt-5-mini",
         "max_tokens_field": "max_tokens",  # For some models/APIs use max_completion_tokens.
         "extra_headers": {},
     },
@@ -188,9 +191,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "safety": {
         "no_warn": False,
     },
-    "ollama": {  # Only used with openai.api_style = ollama.
+    "ollama": {  # Only used with ai.api = ollama.
+        "api_url": "http://127.0.0.1:11434",
+        "api_path": "/api/chat",
+        "model": "gemma4:26b",
         "num_ctx": 0,  # Context window requested per call; 0 keeps the model default.
-        "think": "",  # "" = model default; true/false to force thinking on or off.
+        "think": "true",  # Kept as text so "" (model default) stays valid: true, false, or "".
         "keep_alive": "",  # "" = server default; e.g. 5m, 0 (unload after the run), -1 (keep loaded).
     },
     "mail": {
@@ -501,6 +507,17 @@ def render_default_config() -> str:
 
 # Basic Parameters
 
+# Function: AI backend to use. openai talks to any OpenAI-compatible endpoint (OpenAI, LiteLLM, Ollama's /v1 API)
+# and uses the openai.* settings. ollama talks to Ollama's native /api/chat API and uses the ollama.* settings.
+# Syntax: openai or ollama. The settings of the other backend are ignored. CLI alternative: --api openai|ollama
+ai.api = openai
+
+# Function: Maximum output tokens for each AI response (both backends).
+# Syntax: integer token limit. 8192 is a practical default; use more for thinking models, whose thinking shares this budget.
+ai.max_output_tokens = 8192
+
+# OpenAI-compatible backend (ai.api = openai)
+
 # Function: API key for OpenAI or an OpenAI-compatible server.
 # Syntax: string. Empty means: read OPENAI_API_KEY from the environment if set.
 openai.api_key = ""
@@ -513,9 +530,32 @@ openai.api_url = https://api.openai.com
 # Syntax: OpenAI model name or local/proxy alias, for example gpt-5-mini, Gemma4-26b, or local.
 openai.model = gpt-5-mini
 
-# Function: Maximum output tokens for each AI response.
-# Syntax: integer token limit. 8192 is a practical default for reports and local/proxy backends.
-openai.max_output_tokens = 8192
+# Native Ollama backend (ai.api = ollama)
+
+# Function: Ollama server base URL.
+# Syntax: URL, for example http://127.0.0.1:11434 or http://gpu-host:11434
+ollama.api_url = http://127.0.0.1:11434
+
+# Function: Ollama model tag as shown by "ollama list".
+# Syntax: model tag, for example gemma4:26b or qwen3.8:27b
+ollama.model = gemma4:26b
+
+# Function: Context window (num_ctx) requested for every call, so no custom Modelfile is needed for large contexts.
+# Syntax: integer tokens, for example 32768 or 65536. 0 keeps the model default. CLI alternative: --num-ctx N
+# Ollama reloads the model when this changes. Keep chunk size and this value consistent: a 500 line chunk needs roughly 16k-24k tokens.
+ollama.num_ctx = 0
+
+# Function: Thinking mode for models that support it, for example Qwen3. Better prioritization, deduplication and
+# format adherence, but 3-5x slower, and the thinking shares the output budget and context window with the answer.
+# Syntax: true (default) uses thinking; models without thinking support are detected and run without it.
+# false skips the thinking phase. Empty keeps the model default. CLI alternative: --think / --no-think
+ollama.think = true
+
+# Function: How long Ollama keeps the model loaded after the last call.
+# Syntax: empty keeps the server default; duration such as 5m or 1h; 0 unloads right after the run (useful for cron); -1 keeps it loaded.
+ollama.keep_alive = ""
+
+# Log input
 
 # Function: Number of log lines per AI request.
 # Syntax: integer line count. 500 is recommended for 64k context-size thinking models.
@@ -604,54 +644,42 @@ mail.use_starttls = false
 
 # Advanced Parameters
 
+# Function: Sampling temperature (both backends). Lower values usually improve deterministic formatting.
+# Syntax: decimal number, for example 0, 0.1, 0.2.
+ai.temperature = 0.1
+
+# Function: HTTP timeout for one API attempt (both backends).
+# Syntax: integer seconds.
+ai.timeout_seconds = 120
+
+# Function: Number of retries after the initial API attempt (both backends).
+# Syntax: integer. Default 1 means: one initial attempt plus one retry. Consider 3 when logs.max_parallel > 1 against rate-limited cloud APIs.
+ai.max_retries = 1
+
+# Function: Base delay between retries (both backends). Attempt number is multiplied by this value.
+# Syntax: seconds as integer or decimal, for example 2 or 5.0. A Retry-After header sent by the API takes precedence (capped at 60 seconds).
+ai.retry_backoff_seconds = 2
+
 # Function: API endpoint path appended to openai.api_url.
 # Syntax: /v1/chat/completions recommended. Leave it at this default and the path follows openai.api_style
-# automatically (/v1/responses for responses, /api/chat for ollama). Set it explicitly only for unusual proxies.
+# automatically (/v1/responses for responses). Set it explicitly only for unusual proxies.
 openai.api_path = /v1/chat/completions
 
-# Function: Request payload style.
-# Syntax: chat_completions recommended for OpenAI, LiteLLM and Ollama's OpenAI-compatible endpoint.
-# ollama uses Ollama's native /api/chat API and enables the ollama.* settings below. responses is available for advanced use.
+# Function: Request payload style for the openai backend.
+# Syntax: chat_completions recommended for OpenAI, LiteLLM and Ollama's OpenAI-compatible endpoint. responses is available for advanced use.
 openai.api_style = chat_completions
-
-# Function: Sampling temperature. Lower values usually improve deterministic formatting.
-# Syntax: decimal number, for example 0, 0.1, 0.2.
-openai.temperature = 0.1
-
-# Function: HTTP timeout for one API attempt.
-# Syntax: integer seconds.
-openai.timeout_seconds = 120
-
-# Function: Number of retries after the initial API attempt.
-# Syntax: integer. Default 1 means: one initial attempt plus one retry. Consider 3 when logs.max_parallel > 1 against rate-limited cloud APIs.
-openai.max_retries = 1
-
-# Function: Base delay between retries. Attempt number is multiplied by this value.
-# Syntax: seconds as integer or decimal, for example 2 or 5.0. A Retry-After header sent by the API takes precedence (capped at 60 seconds).
-openai.retry_backoff_seconds = 2
 
 # Function: Name of the max-token field for chat_completions payloads.
 # Syntax: max_tokens for most OpenAI-compatible APIs; max_completion_tokens for selected newer APIs.
 openai.max_tokens_field = max_tokens
 
-# Function: Extra HTTP headers sent to the API.
+# Function: Extra HTTP headers sent to the openai backend.
 # Syntax: JSON object, for example {"X-Header":"value"}. Use {} for none.
 openai.extra_headers = {}
 
-# Native Ollama API (only used with openai.api_style = ollama)
-
-# Function: Context window (num_ctx) requested for every call, so no custom Modelfile is needed for large contexts.
-# Syntax: integer tokens, for example 32768 or 65536. 0 keeps the model default. CLI alternative: --num-ctx N
-# Ollama reloads the model when this changes. Keep chunk size and this value consistent: a 500 line chunk needs roughly 16k-24k tokens.
-ollama.num_ctx = 0
-
-# Function: Thinking mode for models that support it, for example Qwen3.
-# Syntax: empty keeps the model default; false skips the thinking phase (faster, uses less of the output budget); true forces it.
-ollama.think = ""
-
-# Function: How long Ollama keeps the model loaded after the last call.
-# Syntax: empty keeps the server default; duration such as 5m or 1h; 0 unloads right after the run (useful for cron); -1 keeps it loaded.
-ollama.keep_alive = ""
+# Function: API endpoint path appended to ollama.api_url.
+# Syntax: /api/chat unless a proxy in front of Ollama uses a different prefix.
+ollama.api_path = /api/chat
 
 # Function: Default output mode.
 # Syntax: report, errors, or all. report prints only the final report and is best for normal use.
@@ -781,7 +809,7 @@ def build_pre_parser() -> argparse.ArgumentParser:
 def build_parser(config: Dict[str, Any]) -> argparse.ArgumentParser:
     logs = config["logs"]
     defaults = config["defaults"]
-    openai = config["openai"]
+    ai = config["ai"]
 
     examples = """examples:
   journalctl --since "24 hours ago" -p "warning..alert" -o short-iso | ai-log-analyzer
@@ -818,12 +846,15 @@ def build_parser(config: Dict[str, Any]) -> argparse.ArgumentParser:
     parser.add_argument("--focus-on", default=logs.get("focus_on", ""), help="Ask the AI to analyze only this topic, e.g. 'security incidents and network problems'.")
     parser.add_argument("--mode", choices=["errors", "report", "all"], default=defaults.get("mode", "report"), help="report: print only the final report (default); errors: print chunk findings; all: print both.")
     parser.add_argument("--mail", nargs="?", const="__CONFIG_DEFAULT__", default=None, metavar="ADDRESS", help="Optionally send the report to ADDRESS. Without ADDRESS, use mail.default_to from config.")
-    parser.add_argument("--model", default=openai.get("model", "gpt-5-mini"), help="Model name for chunk and final analysis.")
-    parser.add_argument("--max-output-tokens", type=int, default=int(openai.get("max_output_tokens", 8192)), metavar="N", help="Maximum output tokens for each AI response. Config: openai.max_output_tokens.")
-    parser.add_argument("--api-url", default=openai.get("api_url", "https://api.openai.com"), help="API base URL only, e.g. https://api.openai.com or http://127.0.0.1:4000.")
-    parser.add_argument("--api-path", default=openai.get("api_path", "/v1/chat/completions"), help="API endpoint path. Default: /v1/chat/completions. Advanced users may use /v1/responses.")
-    parser.add_argument("--api-style", choices=["chat_completions", "responses", "ollama"], default=openai.get("api_style", "chat_completions"), help="API payload style. Default: chat_completions. ollama uses the native Ollama /api/chat API. Advanced users may use responses.")
-    parser.add_argument("--num-ctx", dest="num_ctx", type=int, default=int(config.get("ollama", {}).get("num_ctx", 0) or 0), metavar="N", help="Context window requested per call with --api-style ollama. 0 keeps the model default. Config: ollama.num_ctx.")
+    parser.add_argument("--api", choices=["openai", "ollama"], default=ai.get("api", "openai"), help="AI backend: openai for OpenAI-compatible endpoints (uses openai.* settings), ollama for the native Ollama API (uses ollama.* settings). Config: ai.api.")
+    parser.add_argument("--model", default=None, help="Model name for chunk and final analysis. Default: model of the selected backend section.")
+    parser.add_argument("--max-output-tokens", type=int, default=int(ai.get("max_output_tokens", 8192)), metavar="N", help="Maximum output tokens for each AI response. Config: ai.max_output_tokens.")
+    parser.add_argument("--api-url", default=None, help="API base URL only, e.g. https://api.openai.com or http://127.0.0.1:11434. Default: api_url of the selected backend section.")
+    parser.add_argument("--api-path", default=None, help="API endpoint path. Default: api_path of the selected backend section (/v1/chat/completions or /api/chat).")
+    parser.add_argument("--api-style", choices=["chat_completions", "responses"], default=None, help="Payload style for --api openai. Default: chat_completions. Advanced users may use responses. Config: openai.api_style.")
+    parser.add_argument("--num-ctx", dest="num_ctx", type=int, default=None, metavar="N", help="Context window requested per call with --api ollama. 0 keeps the model default. Config: ollama.num_ctx.")
+    parser.add_argument("--think", dest="think", action="store_true", default=None, help="Use the model's thinking phase with --api ollama (default, better quality). Config: ollama.think.")
+    parser.add_argument("--no-think", dest="think", action="store_false", help="Skip the thinking phase with --api ollama: 3-5x faster and frees context/output budget.")
     parser.add_argument("--no-progress", action="store_true", help="Disable progress output on stderr.")
     parser.add_argument("--print-input", action="store_true", default=bool(defaults.get("print_input", False)), help="Print the filtered input lines before AI analysis.")
     parser.add_argument("--save-dir", default=defaults.get("save_dir", ""), help="Optional directory to save chunk results and final report as text files.")
@@ -837,6 +868,29 @@ def build_parser(config: Dict[str, Any]) -> argparse.ArgumentParser:
     return parser
 
 
+def resolve_backend(config: Dict[str, Any], args: argparse.Namespace) -> None:
+    """Fill CLI gaps from the selected backend section; the other section is ignored entirely."""
+    backend = config[args.api]
+    if args.api_url is None:
+        args.api_url = str(backend.get("api_url", ""))
+    if args.api_path is None:
+        args.api_path = str(backend.get("api_path", ""))
+    if args.model is None:
+        args.model = str(backend.get("model", ""))
+    if args.api == "ollama":
+        if args.api_style is not None:
+            print("Note: --api-style only affects --api openai; ignored for the ollama backend.", file=sys.stderr)
+        args.api_style = "ollama"  # Internal payload style used by call_ai and the hints.
+        if args.num_ctx is None:
+            args.num_ctx = int(config["ollama"].get("num_ctx", 0) or 0)
+    else:
+        if args.api_style is None:
+            args.api_style = str(config["openai"].get("api_style", "chat_completions"))
+        if args.think is not None or args.num_ctx is not None:
+            print("Note: --think/--no-think and --num-ctx only affect --api ollama; ignored for the openai backend.", file=sys.stderr)
+        args.num_ctx = 0
+
+
 def normalize_api_url(api_url: str, api_path: str) -> str:
     """Return the full API endpoint from a base URL and endpoint path.
 
@@ -848,7 +902,7 @@ def normalize_api_url(api_url: str, api_path: str) -> str:
     url = str(api_url or "").strip().rstrip("/")
     path = str(api_path or "").strip()
     if not url:
-        raise AnalyzerError("openai.api_url / --api-url must not be empty.")
+        raise AnalyzerError("The API base URL must not be empty (--api-url, openai.api_url or ollama.api_url).")
     # Backward compatibility for older configs where api_url contained the full endpoint.
     if re.search(r"/v\d+/(responses|chat/completions)$|/api/chat$", url):
         return url
@@ -1088,7 +1142,7 @@ def write_progress(current: int, total: int, enabled: bool, eta_seconds: Optiona
 
 
 def build_chat_payload(config: Dict[str, Any], model: str, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
-    openai_cfg = config["openai"]
+    ai_cfg = config["ai"]
     payload: Dict[str, Any] = {
         "model": model,
         "messages": [
@@ -1096,24 +1150,24 @@ def build_chat_payload(config: Dict[str, Any], model: str, system_prompt: str, u
             {"role": "user", "content": user_prompt},
         ],
     }
-    if openai_cfg.get("temperature") is not None:
-        payload["temperature"] = openai_cfg.get("temperature")
-    max_output_tokens = openai_cfg.get("max_output_tokens")
+    if ai_cfg.get("temperature") is not None:
+        payload["temperature"] = ai_cfg.get("temperature")
+    max_output_tokens = ai_cfg.get("max_output_tokens")
     if max_output_tokens is not None:
-        payload[str(openai_cfg.get("max_tokens_field", "max_tokens"))] = int(max_output_tokens)
+        payload[str(config["openai"].get("max_tokens_field", "max_tokens"))] = int(max_output_tokens)
     return payload
 
 
 def build_responses_payload(config: Dict[str, Any], model: str, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
-    openai_cfg = config["openai"]
+    ai_cfg = config["ai"]
     payload: Dict[str, Any] = {
         "model": model,
         "instructions": system_prompt,
         "input": user_prompt,
     }
-    if openai_cfg.get("temperature") is not None:
-        payload["temperature"] = openai_cfg.get("temperature")
-    max_output_tokens = openai_cfg.get("max_output_tokens")
+    if ai_cfg.get("temperature") is not None:
+        payload["temperature"] = ai_cfg.get("temperature")
+    max_output_tokens = ai_cfg.get("max_output_tokens")
     if max_output_tokens is not None:
         payload["max_output_tokens"] = int(max_output_tokens)
     return payload
@@ -1129,15 +1183,15 @@ def ollama_think_setting(config: Dict[str, Any]) -> Optional[bool]:
 
 
 def build_ollama_payload(config: Dict[str, Any], args: argparse.Namespace, model: str, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
-    openai_cfg = config["openai"]
+    ai_cfg = config["ai"]
     ollama_cfg = config.get("ollama", {})
     options: Dict[str, Any] = {}
-    if openai_cfg.get("temperature") is not None:
-        options["temperature"] = openai_cfg.get("temperature")
-    max_output_tokens = openai_cfg.get("max_output_tokens")
+    if ai_cfg.get("temperature") is not None:
+        options["temperature"] = ai_cfg.get("temperature")
+    max_output_tokens = ai_cfg.get("max_output_tokens")
     if max_output_tokens is not None:
         options["num_predict"] = int(max_output_tokens)
-    num_ctx = int(getattr(args, "num_ctx", 0) or ollama_cfg.get("num_ctx", 0) or 0)
+    num_ctx = int(getattr(args, "num_ctx", None) or ollama_cfg.get("num_ctx", 0) or 0)
     if num_ctx > 0:
         options["num_ctx"] = num_ctx
     payload: Dict[str, Any] = {
@@ -1149,8 +1203,10 @@ def build_ollama_payload(config: Dict[str, Any], args: argparse.Namespace, model
         "stream": False,  # Ollama streams NDJSON by default; one JSON document is what call_ai expects.
         "options": options,
     }
-    think = ollama_think_setting(config)
-    if think is not None:
+    think = getattr(args, "think", None)
+    if think is None:
+        think = ollama_think_setting(config)
+    if think is not None and not getattr(args, "_ollama_think_unsupported", False):
         payload["think"] = think
     keep_alive = ollama_cfg.get("keep_alive", "")
     if isinstance(keep_alive, (int, float)) and not isinstance(keep_alive, bool):
@@ -1274,10 +1330,11 @@ def empty_response_message(config: Dict[str, Any], args: argparse.Namespace, sta
             "  2. Use a model with a larger context window.\n"
             "  3. Allow a longer answer if the model is likely truncating output:\n"
             "     CLI:    --max-output-tokens 12000\n"
-            "     Config: openai.max_output_tokens = 12000\n"
-            f"     Current value: {config['openai'].get('max_output_tokens', '')}\n"
-            "  4. If you use Ollama or LiteLLM, check the model context size and proxy logs.\n\n"
-            "The chunk analysis results were preserved above so the completed work is not lost."
+            "     Config: ai.max_output_tokens = 12000\n"
+            f"     Current value: {config['ai'].get('max_output_tokens', '')}\n"
+            "  4. If you use Ollama or LiteLLM, check the model context size and proxy logs.\n"
+            + no_think_hint(args, 5)
+            + "\n\nThe chunk analysis results were preserved above so the completed work is not lost."
         )
     return (
         "The AI endpoint did not return a usable response after "
@@ -1295,16 +1352,63 @@ def empty_response_message(config: Dict[str, Any], args: argparse.Namespace, sta
         "     Config: logs.tail_lines = 5000\n"
         "  3. Allow a longer answer if the model is likely truncating output:\n"
         "     CLI:    --max-output-tokens 12000\n"
-        "     Config: openai.max_output_tokens = 12000\n"
-        f"     Current value: {config['openai'].get('max_output_tokens', '')}\n"
+        "     Config: ai.max_output_tokens = 12000\n"
+        f"     Current value: {config['ai'].get('max_output_tokens', '')}\n"
         "  4. If you use Ollama or LiteLLM, check the model context size and proxy logs.\n"
-        + (
-            "  5. Thinking models can spend the whole output budget on thinking. Skip it with:\n"
-            "     Config: ollama.think = false\n"
-            if args.api_style == "ollama"
-            else ""
+        + no_think_hint(args, 5)
+        + "\n\nThe current chunk was not analyzed, so the report was stopped to avoid incomplete results."
+    )
+
+
+def no_think_hint(args: argparse.Namespace, number: int, indent: str = "  ") -> str:
+    """Numbered advice to switch thinking off; phrased for the API style in use."""
+    if args.api_style == "ollama":
+        return (
+            f"{indent}{number}. Disable the thinking phase; it shares the context window and output budget with the answer:\n"
+            f"{indent}   CLI:    --no-think\n"
+            f"{indent}   Config: ollama.think = false"
         )
-        + "\nThe current chunk was not analyzed, so the report was stopped to avoid incomplete results."
+    return (
+        f"{indent}{number}. If this is a thinking model, its thinking shares the context window and output budget with the answer.\n"
+        f"{indent}   With Ollama, switch to the native backend and disable it: --api ollama --no-think"
+    )
+
+
+CONTEXT_EXCEEDED_RE = re.compile(
+    r"context[_ ]length|context window|maximum context|max(imum)? (input )?tokens|too many tokens|"
+    r"prompt is too long|input is too long|exceeds? the (model'?s )?(context|limit)|num_ctx",
+    re.IGNORECASE,
+)
+
+
+def context_exceeded_message(config: Dict[str, Any], args: argparse.Namespace, stage: str) -> str:
+    what = "final report request" if stage == "final" else "chunk"
+    hints = []
+    if stage == "final":
+        hints.append(
+            "  1. Produce fewer findings, for example with a narrower --focus-on, additional --ignore topics,\n"
+            "     --exclude-pattern / --exclude-regex-pattern for known noise, or fewer input lines (--tail-lines)."
+        )
+    else:
+        hints.append(
+            "  1. Use a smaller chunk size:\n"
+            "     CLI:    --chunk-size 300\n"
+            "     Config: logs.chunk_size = 300\n"
+            f"     Current value: {args.chunk_size} lines"
+        )
+    hints.append(no_think_hint(args, 2))
+    if args.api_style == "ollama":
+        hints.append(
+            "  3. Request a larger context window if the model supports it:\n"
+            "     CLI:    --num-ctx 65536\n"
+            "     Config: ollama.num_ctx = 65536\n"
+            f"     Current value: {int(getattr(args, 'num_ctx', 0) or 0) or 'model default'}"
+        )
+    else:
+        hints.append("  3. Use a model or proxy configuration with a larger context window.")
+    return (
+        f"\n\nThe API reports that the {what} exceeded the model context window.\n\n"
+        "What you can try:\n" + "\n".join(hints)
     )
 
 
@@ -1313,8 +1417,8 @@ def truncated_response_message(config: Dict[str, Any], args: argparse.Namespace,
     hints = [
         "  1. Allow a longer answer:\n"
         "     CLI:    --max-output-tokens 16000\n"
-        "     Config: openai.max_output_tokens = 16000\n"
-        f"     Current value: {config['openai'].get('max_output_tokens', '')}",
+        "     Config: ai.max_output_tokens = 16000\n"
+        f"     Current value: {config['ai'].get('max_output_tokens', '')}",
     ]
     if stage == "final":
         hints.append(
@@ -1328,11 +1432,7 @@ def truncated_response_message(config: Dict[str, Any], args: argparse.Namespace,
             "     Config: logs.chunk_size = 300\n"
             f"     Current value: {args.chunk_size} lines"
         )
-    if args.api_style == "ollama":
-        hints.append(
-            "  3. For thinking models, the thinking phase shares the output budget. Skip it with:\n"
-            "     Config: ollama.think = false"
-        )
+    hints.append(no_think_hint(args, 3))
     return (
         f"The model stopped the {what} because the output token limit was reached "
         f"(finish reason: {finish_reason}). The answer is incomplete, so the report was stopped "
@@ -1347,11 +1447,12 @@ def call_ai(config: Dict[str, Any], args: argparse.Namespace, system_prompt: str
 
     api_style = args.api_style
     api_url = resolve_endpoint(args)
-    api_key = os.environ.get("OPENAI_API_KEY") or str(config["openai"].get("api_key", ""))
     headers = {"Content-Type": "application/json"}
-    if api_key and api_key.strip() and api_key.strip() not in {"YOUR_KEY", "YOUR_OPENAI_API_KEY"}:
-        headers["Authorization"] = f"Bearer {api_key.strip()}"
-    headers.update({str(k): str(v) for k, v in (config["openai"].get("extra_headers") or {}).items()})
+    if api_style != "ollama":
+        api_key = os.environ.get("OPENAI_API_KEY") or str(config["openai"].get("api_key", ""))
+        if api_key and api_key.strip() and api_key.strip() not in {"YOUR_KEY", "YOUR_OPENAI_API_KEY"}:
+            headers["Authorization"] = f"Bearer {api_key.strip()}"
+        headers.update({str(k): str(v) for k, v in (config["openai"].get("extra_headers") or {}).items()})
 
     if api_style == "responses":
         payload = build_responses_payload(config, args.model, system_prompt, user_prompt)
@@ -1361,10 +1462,10 @@ def call_ai(config: Dict[str, Any], args: argparse.Namespace, system_prompt: str
         payload = build_chat_payload(config, args.model, system_prompt, user_prompt)
 
     body = json.dumps(payload).encode("utf-8")
-    timeout = int(config["openai"].get("timeout_seconds", 120))
-    max_retries = max(0, int(config["openai"].get("max_retries", 1)))
+    timeout = int(config["ai"].get("timeout_seconds", 120))
+    max_retries = max(0, int(config["ai"].get("max_retries", 1)))
     total_attempts = 1 + max_retries
-    backoff = float(config["openai"].get("retry_backoff_seconds", 2))
+    backoff = float(config["ai"].get("retry_backoff_seconds", 2))
 
     last_error: Optional[Exception] = None
     attempts_made = 0
@@ -1384,16 +1485,33 @@ def call_ai(config: Dict[str, Any], args: argparse.Namespace, system_prompt: str
                     f"output tokens = {usage.get('output', '?')}, finish reason = {finish_reason or 'n/a'}",
                     file=sys.stderr,
                 )
-            if not text.strip():
-                raise EmptyAIResponseError("API returned an empty response text.")
+            # Checked before the empty-text check: a thinking model can spend the whole budget on
+            # thinking and return no answer text at all, which is a truncation, not an empty reply.
             if finish_reason in TRUNCATED_FINISH_REASONS:
                 raise TruncatedAIResponseError(truncated_response_message(config, args, stage, finish_reason))
+            if not text.strip():
+                raise EmptyAIResponseError("API returned an empty response text.")
             return text
         except TruncatedAIResponseError:
             raise  # Deterministic; a retry would hit the same output limit.
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
-            last_error = AnalyzerError(f"API HTTP {exc.code}: {error_body[:2000]}")
+            if (
+                exc.code == 400
+                and api_style == "ollama"
+                and payload.get("think") is True
+                and "does not support thinking" in error_body
+            ):
+                # Thinking is on by default; models without that capability simply run without it.
+                args._ollama_think_unsupported = True
+                if not getattr(args, "_ollama_think_note_printed", False):
+                    args._ollama_think_note_printed = True
+                    print(f"Note: model {args.model} does not support thinking; continuing without it.", file=sys.stderr)
+                return call_ai(config, args, system_prompt, user_prompt, stage=stage)
+            detail = error_body[:2000]
+            if CONTEXT_EXCEEDED_RE.search(error_body):
+                detail += context_exceeded_message(config, args, stage)
+            last_error = AnalyzerError(f"API HTTP {exc.code}: {detail}")
             if exc.code not in RETRYABLE_HTTP_STATUSES:
                 break
             retry_after = parse_retry_after(exc.headers.get("Retry-After") if exc.headers else None)
@@ -1771,7 +1889,7 @@ def analyze_chunks(config: Dict[str, Any], args: argparse.Namespace, input_path:
                     if in_flight:
                         print(
                             f"\nChunk {futures[future]}/{total_chunks} failed. Waiting for {in_flight} in-flight "
-                            f"request(s) to finish (at most {int(config['openai'].get('timeout_seconds', 120))}s each) before exiting.",
+                            f"request(s) to finish (at most {int(config['ai'].get('timeout_seconds', 120))}s each) before exiting.",
                             file=sys.stderr,
                         )
                     raise
@@ -1827,8 +1945,9 @@ def build_final_report(config: Dict[str, Any], args: argparse.Namespace, chunk_r
             "  2. Raise the limit if your model context is large enough:\n"
             "     CLI:    --max-final-input-chars 250000\n"
             "     Config: logs.max_final_input_chars = 250000\n"
-            "     Use 0 to disable the check.\n\n"
-            "The chunk analysis results were preserved above so the completed work is not lost."
+            "     Use 0 to disable the check.\n"
+            + no_think_hint(args, 3)
+            + "\n\nThe chunk analysis results were preserved above so the completed work is not lost."
         )
     nonce = new_run_nonce()
     template = str(prompts["final_user_template"])
@@ -2093,13 +2212,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.max_output_tokens <= 0:
         print("Error: --max-output-tokens must be greater than zero.", file=sys.stderr)
         return 2
-    config["openai"]["max_output_tokens"] = args.max_output_tokens
+    config["ai"]["max_output_tokens"] = args.max_output_tokens
     if args.tail_lines < 0:
         print("Error: --tail-lines must be zero or greater.", file=sys.stderr)
         return 2
     if args.max_final_input_chars < 0:
         print("Error: --max-final-input-chars must be zero or greater.", file=sys.stderr)
         return 2
+    resolve_backend(config, args)
     if args.num_ctx < 0:
         print("Error: --num-ctx must be zero or greater.", file=sys.stderr)
         return 2

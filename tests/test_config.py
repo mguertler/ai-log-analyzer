@@ -71,11 +71,14 @@ def test_rendered_default_config_round_trips_defaults(tmp_path):
     path = tmp_path / "default.conf"
     ala.write_default_config(path)
     loaded = ala.load_config(path)
-    for section in ("logs", "openai", "safety", "timestamps"):
+    for section in ("ai", "logs", "openai", "ollama", "safety", "timestamps"):
         for key, value in ala.DEFAULT_CONFIG[section].items():
             if key in ("api_key", "extra_headers"):
                 continue
+            if section == "ollama" and key in ("think", "keep_alive"):
+                continue  # rendered as true / "" and read back as bool / ""
             assert loaded[section][key] == value, f"{section}.{key}"
+    assert loaded["ollama"]["think"] is True and loaded["ollama"]["keep_alive"] == ""
     assert loaded["prompts"]["chunk_user_prefix"] == ""
 
 

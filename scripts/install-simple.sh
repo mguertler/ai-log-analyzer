@@ -204,17 +204,39 @@ chmod 0600 "$CONFIG_PATH" 2>/dev/null || true
 
 if ask_yes_no "Edit configuration interactively?" "Y"; then
   echo ""
-  echo "Chat Completions API is used by default for OpenAI, LiteLLM, and Ollama compatibility."
-  echo "For Ollama's native API (per-call context size, thinking control) set openai.api_style = ollama in the config afterwards."
-  echo "Examples:"
-  echo "  OpenAI:  https://api.openai.com"
-  echo "  LiteLLM: http://127.0.0.1:4000"
-  echo "  Ollama:  http://127.0.0.1:11434"
-  echo ""
+  echo "AI backend:"
+  echo "  openai = any OpenAI-compatible endpoint: OpenAI, LiteLLM, or Ollama's /v1 API"
+  echo "  ollama = Ollama's native /api/chat API with per-call context size and thinking control"
+  echo "Only the settings of the selected backend are used; the other section in the config is ignored."
+  BACKEND=""
+  while [ "$BACKEND" != "openai" ] && [ "$BACKEND" != "ollama" ]; do
+    BACKEND=$(ask "Backend (openai/ollama)" "openai")
+  done
 
-  API_URL=$(ask "API base URL" "https://api.openai.com")
-  API_KEY=$(ask_secret "API key (empty = use OPENAI_API_KEY environment variable)" "")
-  MODEL=$(ask "Model" "gpt-5-mini")
+  API_URL=""; API_KEY=""; MODEL=""; OLLAMA_URL=""; OLLAMA_MODEL=""; NUM_CTX=""; THINK=""
+  if [ "$BACKEND" = "ollama" ]; then
+    echo ""
+    OLLAMA_URL=$(ask "Ollama server URL" "http://127.0.0.1:11434")
+    OLLAMA_MODEL=$(ask "Ollama model tag (see: ollama list)" "gemma4:26b")
+    echo "Context window: 0 keeps the model default. 32768 or 65536 are typical for log analysis; Ollama reloads the model when it changes."
+    NUM_CTX=$(ask "Context window in tokens (num_ctx)" "0")
+    echo "Thinking: better prioritization and format adherence, but 3-5x slower. Models without thinking support run without it automatically."
+    if ask_yes_no "Use the thinking phase of the model?" "Y"; then
+      THINK="true"
+    else
+      THINK="false"
+    fi
+  else
+    echo ""
+    echo "Examples:"
+    echo "  OpenAI:  https://api.openai.com"
+    echo "  LiteLLM: http://127.0.0.1:4000"
+    echo "  Ollama:  http://127.0.0.1:11434"
+    API_URL=$(ask "API base URL" "https://api.openai.com")
+    API_KEY=$(ask_secret "API key (empty = use OPENAI_API_KEY environment variable)" "")
+    MODEL=$(ask "Model" "gpt-5-mini")
+  fi
+  echo ""
   MAX_OUTPUT_TOKENS=$(ask "Maximum output tokens" "8192")
   echo ""
   echo "Chunk size tips:"
@@ -228,25 +250,36 @@ if ask_yes_no "Edit configuration interactively?" "Y"; then
   MAX_LINES=$(ask "Maximum filtered lines before abort" "15000")
   TAIL_LINES=$(ask "Default tail limit for input lines (0 = no limit)" "0")
 
-  export API_KEY API_URL MODEL MAX_OUTPUT_TOKENS CHUNK_SIZE MAX_PARALLEL MAX_LINES TAIL_LINES CONFIG_PATH
+  export BACKEND API_KEY API_URL MODEL OLLAMA_URL OLLAMA_MODEL NUM_CTX THINK MAX_OUTPUT_TOKENS CHUNK_SIZE MAX_PARALLEL MAX_LINES TAIL_LINES CONFIG_PATH
   python3 - <<'PY'
 import os
 from pathlib import Path
 
 path = Path(os.environ["CONFIG_PATH"])
+backend = os.environ.get("BACKEND", "openai")
 updates = {
-    "openai.api_url": os.environ.get("API_URL", "https://api.openai.com"),
-    "openai.api_key": os.environ.get("API_KEY", ""),
-    "openai.api_path": "/v1/chat/completions",
-    "openai.api_style": "chat_completions",
-    "openai.model": os.environ.get("MODEL", "gpt-5-mini"),
-    "openai.max_output_tokens": os.environ.get("MAX_OUTPUT_TOKENS", "8192"),
+    "ai.api": backend,
+    "ai.max_output_tokens": os.environ.get("MAX_OUTPUT_TOKENS", "8192"),
     "logs.chunk_size": os.environ.get("CHUNK_SIZE", "500"),
     "logs.max_parallel": os.environ.get("MAX_PARALLEL", "1"),
     "logs.max_lines": os.environ.get("MAX_LINES", "15000"),
     "logs.tail_lines": os.environ.get("TAIL_LINES", "0"),
     "timestamps.enabled": "true",
 }
+if backend == "ollama":
+    updates.update({
+        "ollama.api_url": os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434"),
+        "ollama.model": os.environ.get("OLLAMA_MODEL", "gemma4:26b"),
+        "ollama.num_ctx": os.environ.get("NUM_CTX", "0"),
+        "ollama.think": os.environ.get("THINK", "true"),
+    })
+else:
+    updates.update({
+        "openai.api_url": os.environ.get("API_URL", "https://api.openai.com"),
+        "openai.api_key": os.environ.get("API_KEY", ""),
+        "openai.api_style": "chat_completions",
+        "openai.model": os.environ.get("MODEL", "gpt-5-mini"),
+    })
 
 def fmt(value: str) -> str:
     value = str(value)

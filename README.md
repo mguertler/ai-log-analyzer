@@ -209,9 +209,10 @@ Useful filtering options:
 - `--ignore` asks the model to completely omit known noise topics from the report
 - `--tail-lines` keeps only the last N filtered input lines
 - `--chunk-size` controls how many log lines are sent per AI request
-- `--max-parallel` controls how many chunks are analyzed at the same time; default is `1`, and final chunk order is preserved. Against rate-limited cloud APIs, consider `openai.max_retries = 3`; a `Retry-After` header from the API is honored.
+- `--max-parallel` controls how many chunks are analyzed at the same time; default is `1`, and final chunk order is preserved. Against rate-limited cloud APIs, consider `ai.max_retries = 3`; a `Retry-After` header from the API is honored.
 - `--max-lines` prevents unexpectedly large and costly runs
 - `--max-final-input-chars` aborts before the final report if the combined chunk findings would be too large for the model (default `120000`; the chunk results are kept)
+- `--api openai|ollama` selects the backend for one run; `--no-think` skips the thinking phase of models such as Qwen3 with the native Ollama backend (faster, less context use), `--think` is the default
 - `--print-input` lets you inspect the filtered input first
 - `--dry-run` collects and counts lines without calling the AI endpoint
 
@@ -309,13 +310,13 @@ AI_LOG_ANALYZER_CONFIG=/path/to/ai-log-analyzer.conf ai-log-analyzer /var/log/sy
 
 The config format is simple `key = value` text. Comments and heredoc-style multi-line values are supported.
 
+The backend is selected with `ai.api`. Only the section of the selected backend is read; the other one is ignored, so you can keep both configured and just flip the switch (or use `--api openai|ollama` for one run).
+
 Important defaults:
 
 ```text
-openai.api_url = https://api.openai.com
-openai.api_path = /v1/chat/completions
-openai.api_style = chat_completions
-openai.model = gpt-5-mini
+ai.api = openai
+ai.max_output_tokens = 8192
 logs.chunk_size = 500
 logs.max_parallel = 1
 logs.max_lines = 15000
@@ -324,42 +325,57 @@ logs.tail_lines = 0
 defaults.mode = report
 ```
 
-For LiteLLM or Ollama-compatible local setups, use for example:
+### `ai.api = openai` - OpenAI-compatible endpoints
+
+Used for OpenAI, LiteLLM proxies and Ollama's OpenAI-compatible `/v1` API:
 
 ```text
+ai.api = openai
+openai.api_url = https://api.openai.com
+openai.api_key = ""                      # or OPENAI_API_KEY in the environment
+openai.model = gpt-5-mini
+```
+
+LiteLLM example:
+
+```text
+ai.api = openai
 openai.api_url = http://127.0.0.1:4000
-openai.api_path = /v1/chat/completions
-openai.api_style = chat_completions
 openai.model = Gemma4-26b
 ```
 
-Direct Ollama OpenAI-compatible endpoint example:
+Ollama through its OpenAI-compatible endpoint:
 
 ```text
+ai.api = openai
 openai.api_url = http://127.0.0.1:11434
-openai.api_path = /v1/chat/completions
-openai.api_style = chat_completions
 openai.model = Gemma4-26b
 ```
 
-Ollama's native API (`/api/chat`) lets you set the context size per call, so you do not need a custom Modelfile for large contexts, and lets you control thinking and model unloading:
+`openai.api_path` (default `/v1/chat/completions`) and `openai.api_style` (`chat_completions` or `responses`) are advanced settings; the default path follows the style automatically.
+
+### `ai.api = ollama` - native Ollama API
+
+Talks to Ollama's native `/api/chat` API. It lets you set the context size per call, so you do not need a custom Modelfile for large contexts, and lets you control thinking and model unloading:
 
 ```text
-openai.api_url = http://127.0.0.1:11434
-openai.api_style = ollama
-openai.model = qwen3.8:27b
+ai.api = ollama
+ollama.api_url = http://127.0.0.1:11434
+ollama.model = qwen3.8:27b
 ollama.num_ctx = 65536
-ollama.think = false
+ollama.think = true
 ollama.keep_alive = 0
 ```
 
 - `ollama.num_ctx` (or `--num-ctx N`) is the context window requested for every call; `0` keeps the model default. Ollama reloads the model when it changes.
-- `ollama.think` skips (`false`) or forces (`true`) the thinking phase of models such as Qwen3; empty keeps the model default. Thinking shares the output token budget with the answer.
+- `ollama.think` (or `--think` / `--no-think`) controls the thinking phase of models such as Qwen3. It is on by default: thinking gives noticeably better prioritization, deduplication and format adherence, at the price of 3-5x longer runs. Models without thinking support are detected and simply run without it. Use `--no-think` for quick interactive runs or large volumes; thinking shares the context window and the output token budget with the answer, so it is also the first thing to switch off when the context window is exceeded.
 - `ollama.keep_alive` controls how long the model stays loaded afterwards, for example `0` to free VRAM after a cron run.
 
-With `--api-style ollama` the endpoint path switches to `/api/chat` automatically unless `openai.api_path` is set to something other than the default.
+### Shared request settings
 
-With every API style, an answer that was cut off by the output token limit (`finish_reason` / `done_reason` = `length`) aborts the run with a hint instead of producing a report that silently misses findings.
+`ai.max_output_tokens`, `ai.temperature`, `ai.timeout_seconds`, `ai.max_retries` and `ai.retry_backoff_seconds` apply to both backends.
+
+With both backends, an answer that was cut off by the output token limit (`finish_reason` / `done_reason` = `length`) aborts the run with a hint instead of producing a report that silently misses findings. Context-window errors reported by the API (OpenAI, LiteLLM, Ollama) are recognized and answered with concrete advice: smaller `--chunk-size`, `--no-think`, larger `--num-ctx`.
 
 ## Daily reports by email
 
